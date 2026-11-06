@@ -7,9 +7,9 @@ import {
   Image,
   ScrollView,
   ActivityIndicator,
+  RefreshControl,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import FooterDock from "../components/FooterDock";
 import { setCache, getCache } from "../utils/cache";
 
 const API_KEY = "fdd10ed1203d4ce19d9db91b4ff0d8f1";
@@ -22,6 +22,8 @@ const HomeScreen = ({ navigation }) => {
     upcoming: [],
   });
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
 
   const LEAGUES = "PL,PD,BL1,SA,FL1";
 
@@ -39,7 +41,8 @@ const HomeScreen = ({ navigation }) => {
 
   const fetchMatches = async () => {
     try {
-      setLoading(true);
+      if (!refreshing) setLoading(true);
+      setError("");
 
       const cached = await getCache("all_matches");
       if (cached) {
@@ -59,15 +62,16 @@ const HomeScreen = ({ navigation }) => {
       const futureTo = futureDate.toISOString().split("T")[0];
       const upcoming_res = await fetch(
         `https://api.football-data.org/v4/matches?competitions=${LEAGUES}&dateFrom=${dateTo}&dateTo=${futureTo}`,
-        { headers: { "X-Auth-Token": API_KEY } }
+        { headers: { "X-Auth-Token": API_KEY } },
       );
-      await new Promise((res) => setTimeout(res, 5000));
+      if (!upcoming_res.ok) throw new Error("Unable to load fixtures");
 
       const upcoming_data = await upcoming_res.json();
       const completed_res = await fetch(
         `https://api.football-data.org/v4/matches?competitions=${LEAGUES}&status=FINISHED&dateFrom=${dateFrom}&dateTo=${dateTo}`,
-        { headers: { "X-Auth-Token": API_KEY } }
+        { headers: { "X-Auth-Token": API_KEY } },
       );
+      if (!completed_res.ok) throw new Error("Unable to load results");
 
       const completed_data = await completed_res.json();
       const live = [];
@@ -122,9 +126,18 @@ const HomeScreen = ({ navigation }) => {
       await setCache("all_matches", all);
     } catch (err) {
       console.log("Match Fetch Error", err);
+      setError(
+        "We couldn't load matches. Check your connection and try again.",
+      );
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
+  };
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchMatches();
   };
 
   useEffect(() => {
@@ -135,14 +148,72 @@ const HomeScreen = ({ navigation }) => {
     selectedTab === "Live"
       ? matches.live
       : selectedTab === "Completed"
-      ? matches.completed
-      : matches.upcoming;
+        ? matches.completed
+        : matches.upcoming;
+
+  const pulseMatch =
+    matches.live[0] || matches.upcoming[0] || matches.completed[0];
+  const pulse =
+    matches.live.length > 0
+      ? {
+          eyebrow: "LIVE NOW",
+          title: `${matches.live.length} match${matches.live.length === 1 ? " is" : "es are"} unfolding`,
+          description: "Stay close to the moments that can change the table.",
+        }
+      : matches.upcoming.length > 0
+        ? {
+            eyebrow: "NEXT UP",
+            title: `${matches.upcoming[0].home} meet ${matches.upcoming[0].away}`,
+            description: `${matches.upcoming[0].date} at ${matches.upcoming[0].time}. Your next football window starts here.`,
+          }
+        : {
+            eyebrow: "MATCH PULSE",
+            title: "The pitch is quiet for now",
+            description:
+              "Pull to refresh and we will bring the next story to you.",
+          };
+
+  const renderPulse = () => (
+    <View style={styles.pulseSection}>
+      <View style={styles.pulseHeader}>
+        <View>
+          <Text style={styles.pulseEyebrow}>{pulse.eyebrow}</Text>
+          <Text style={styles.pulseHeading}>Match Pulse</Text>
+        </View>
+        <View style={styles.pulseDot} />
+      </View>
+      <Text style={styles.pulseTitle}>{pulse.title}</Text>
+      <Text style={styles.pulseDescription}>{pulse.description}</Text>
+      {pulseMatch && (
+        <TouchableOpacity
+          style={styles.pulseAction}
+          onPress={() =>
+            navigation.navigate("MatchDetails", { match: pulseMatch })
+          }
+        >
+          <Text style={styles.pulseActionText}>Open match centre</Text>
+          <Text style={styles.pulseArrow}>›</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
 
   const renderContent = () => {
     if (loading) {
       return (
         <View style={styles.loaderWrapper}>
           <ActivityIndicator size="large" color="#d7fc5a" />
+        </View>
+      );
+    }
+
+    if (error && current.length === 0) {
+      return (
+        <View style={styles.emptyStateContainer}>
+          <Text style={styles.noMatchesText}>{error}</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={onRefresh}>
+            <Text style={styles.retryText}>Try again</Text>
+          </TouchableOpacity>
         </View>
       );
     }
@@ -161,9 +232,20 @@ const HomeScreen = ({ navigation }) => {
       <ScrollView
         style={{ marginTop: 20 }}
         contentContainerStyle={{ paddingBottom: 130 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#d7fc5a"
+          />
+        }
       >
         {current.map((match, i) => (
-          <TouchableOpacity key={i} activeOpacity={1}>
+          <TouchableOpacity
+            key={`${match.home}-${match.away}-${match.date || match.status}-${i}`}
+            activeOpacity={0.8}
+            onPress={() => navigation.navigate("MatchDetails", { match })}
+          >
             <View style={styles.card}>
               <View style={styles.teamContainer}>
                 <Image source={match.homeLogo} style={styles.logo} />
@@ -203,7 +285,7 @@ const HomeScreen = ({ navigation }) => {
       <View style={styles.headerContainer}>
         <Text style={styles.headerTitle}>Watch Matches</Text>
       </View>
-      
+
       <View style={styles.segmentContainer}>
         {["Completed", "Live", "Upcoming"].map((tab) => (
           <TouchableOpacity
@@ -226,8 +308,8 @@ const HomeScreen = ({ navigation }) => {
         ))}
       </View>
 
+      {renderPulse()}
       {renderContent()}
-      <FooterDock navigation={navigation} active="Home" />
     </LinearGradient>
   );
 };
@@ -247,6 +329,14 @@ const styles = StyleSheet.create({
     textAlign: "center",
     opacity: 0.8,
   },
+  retryButton: {
+    backgroundColor: "#d7fc5a",
+    paddingHorizontal: 20,
+    paddingVertical: 11,
+    borderRadius: 12,
+    marginTop: 18,
+  },
+  retryText: { color: "#000", fontWeight: "800" },
   headerContainer: { marginTop: 65, alignItems: "center" },
   headerTitle: { color: "#fff", fontSize: 22, fontWeight: "700" },
 
@@ -268,17 +358,73 @@ const styles = StyleSheet.create({
   segmentText: { color: "#fff", fontSize: 15, fontWeight: "600" },
   activeSegmentText: { color: "#000", fontWeight: "700" },
 
-  card: {
-  backgroundColor: "rgba(255,255,255,0.15)",
-  borderRadius: 20,
-  padding: 22,
-  marginBottom: 20,
-  flexDirection: "row",
-  justifyContent: "space-between",
-  alignItems: "center",
-  marginHorizontal: 20,
-},
+  pulseSection: {
+    marginHorizontal: 20,
+    marginTop: 24,
+    padding: 20,
+    borderRadius: 24,
+    backgroundColor: "#d7fc5a",
+  },
+  pulseHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+  },
+  pulseEyebrow: {
+    color: "rgba(15,15,13,0.65)",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1.4,
+  },
+  pulseHeading: {
+    color: "#0f0f0d",
+    fontSize: 18,
+    fontWeight: "900",
+    marginTop: 3,
+  },
+  pulseDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#ef4444",
+    marginTop: 3,
+  },
+  pulseTitle: {
+    color: "#0f0f0d",
+    fontSize: 22,
+    lineHeight: 27,
+    fontWeight: "900",
+    marginTop: 22,
+  },
+  pulseDescription: {
+    color: "rgba(15,15,13,0.7)",
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 7,
+  },
+  pulseAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    marginTop: 17,
+    paddingVertical: 9,
+    paddingHorizontal: 13,
+    borderRadius: 10,
+    backgroundColor: "#0f0f0d",
+  },
+  pulseActionText: { color: "#d7fc5a", fontSize: 13, fontWeight: "800" },
+  pulseArrow: { color: "#d7fc5a", fontSize: 20, lineHeight: 16, marginLeft: 6 },
 
+  card: {
+    backgroundColor: "rgba(255,255,255,0.15)",
+    borderRadius: 20,
+    padding: 22,
+    marginBottom: 20,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginHorizontal: 20,
+  },
 
   teamContainer: { flex: 1, alignItems: "center" },
   centerContent: { alignItems: "center", minWidth: 100 },

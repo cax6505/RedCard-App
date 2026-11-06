@@ -40,7 +40,7 @@ export default function TeamDetailsScreen() {
         `https://api.football-data.org/v4/teams/${team.id}`,
         {
           headers: { "X-Auth-Token": API_KEY },
-        }
+        },
       );
       const data = await res.json();
       setDetails(data);
@@ -52,7 +52,7 @@ export default function TeamDetailsScreen() {
   const fetchPlayerPhoto = async (playerName) => {
     try {
       const url = `https://www.thesportsdb.com/api/v1/json/3/searchplayers.php?p=${encodeURIComponent(
-        playerName
+        playerName,
       )}`;
 
       const res = await fetch(url);
@@ -96,7 +96,13 @@ export default function TeamDetailsScreen() {
       style={{ flex: 1, paddingTop: Platform.OS === "ios" ? 60 : 50 }}
     >
       <View style={styles.headerContainer}>
-        <View style={{ width: 40 }} />
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => navigation.goBack()}
+          accessibilityLabel="Go back"
+        >
+          <Ionicons name="chevron-back" size={24} color="#fff" />
+        </TouchableOpacity>
         <Text style={styles.titleText}>{details?.shortName || "Team"}</Text>
         <View style={{ width: 40 }} />
       </View>
@@ -137,7 +143,18 @@ export default function TeamDetailsScreen() {
           </View>
         </View>
 
-        <Text style={styles.sectionTitle}>Squad</Text>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Squad</Text>
+          <TouchableOpacity
+            style={styles.lineupButton}
+            onPress={() =>
+              navigation.navigate("LineupBuilder", { team: details })
+            }
+          >
+            <Ionicons name="football-outline" size={17} color="#0f0f0d" />
+            <Text style={styles.lineupButtonText}>Build lineup</Text>
+          </TouchableOpacity>
+        </View>
         <View style={styles.squadCard}>
           {details?.squad?.length > 0 ? (
             details.squad.map((p) => (
@@ -334,6 +351,27 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginLeft: 20,
     marginTop: 10,
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginHorizontal: 20,
+    marginTop: 10,
+  },
+  lineupButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#d7fc5a",
+    borderRadius: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+  },
+  lineupButtonText: {
+    color: "#0f0f0d",
+    fontSize: 12,
+    fontWeight: "800",
+    marginLeft: 5,
   },
   squadCard: {
     margin: 20,

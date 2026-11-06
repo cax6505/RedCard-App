@@ -1,28 +1,37 @@
 {
   "expo": {
-    "name": "UITemplate",
-    "slug": "UITemplate",
+    "name": "RedCard",
+    "slug": "redcard-app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "light",
-    "scheme": "uitemplate",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "redcard",
     "newArchEnabled": true,
-
     "splash": {
-      "backgroundColor": "#ffffff",
-      "resizeMode": "contain"
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#10110d"
     },
-
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.UITemplate"
+      "bundleIdentifier": "com.redcard.app"
     },
-
     "android": {
-      "edgeToEdgeEnabled": true,
-      "package": "com.anonymous.UITemplate"
+      "package": "com.redcard.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#10110d"
+      },
+      "edgeToEdgeEnabled": true
     },
-
-    "web": {}
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "0687db51-a2a0-422a-abc9-51fe80b7df1b"
+      }
+    }
   }
 }

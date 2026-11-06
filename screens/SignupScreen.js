@@ -10,8 +10,9 @@ import {
   Platform,
 } from "react-native";
 import { BlurView } from "expo-blur";
-import { createUserWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../firebase";
+import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { auth, db } from "../firebase";
+import { doc, setDoc } from "firebase/firestore";
 import { useNavigation } from "@react-navigation/native";
 
 export default function SignupScreen() {
@@ -19,19 +20,51 @@ export default function SignupScreen() {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const handleSignup = async () => {
+    if (!username.trim() || !email.trim() || password.length < 6) {
+      alert(
+        "Enter a username, a valid email, and a password with at least 6 characters.",
+      );
+      return;
+    }
+    setLoading(true);
     try {
-      await createUserWithEmailAndPassword(auth, email, password);
+      const credential = await createUserWithEmailAndPassword(
+        auth,
+        email.trim(),
+        password,
+      );
+      await updateProfile(credential.user, { displayName: username.trim() });
+      await setDoc(
+        doc(db, "users", credential.user.uid),
+        {
+          username: username.trim(),
+          email: email.trim(),
+          favouriteTeamIds: [],
+        },
+        { merge: true },
+      );
       navigation.replace("Home");
     } catch (error) {
-      alert(error.message);
+      alert(
+        error.code === "auth/email-already-in-use"
+          ? "An account already exists for this email."
+          : "Unable to create your account.",
+      );
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
     <View style={styles.container}>
-      <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
+      <StatusBar
+        translucent
+        backgroundColor="transparent"
+        barStyle="light-content"
+      />
 
       <ImageBackground
         source={require("../assets/Messi.jpeg")}
@@ -67,13 +100,20 @@ export default function SignupScreen() {
             value={password}
           />
 
-          <TouchableOpacity style={styles.button} onPress={handleSignup}>
-            <Text style={styles.buttonText}>Sign Up</Text>
+          <TouchableOpacity
+            style={styles.button}
+            onPress={handleSignup}
+            disabled={loading}
+          >
+            <Text style={styles.buttonText}>
+              {loading ? "Creating account..." : "Sign Up"}
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity onPress={() => navigation.navigate("Login")}>
             <Text style={styles.signupText}>
-              Already have an account? <Text style={styles.signupLink}>Login</Text>
+              Already have an account?{" "}
+              <Text style={styles.signupLink}>Login</Text>
             </Text>
           </TouchableOpacity>
         </BlurView>

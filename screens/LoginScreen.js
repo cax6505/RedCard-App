@@ -10,7 +10,10 @@ import {
   Platform,
 } from "react-native";
 import { BlurView } from "expo-blur";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import {
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+} from "firebase/auth";
 import { auth } from "../firebase";
 import { useNavigation } from "@react-navigation/native";
 
@@ -18,13 +21,39 @@ export default function LoginScreen() {
   const navigation = useNavigation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const handleLogin = async () => {
+    if (!email.trim() || !password) {
+      alert("Enter your email and password.");
+      return;
+    }
+    setLoading(true);
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      await signInWithEmailAndPassword(auth, email.trim(), password);
       navigation.replace("Home");
     } catch (error) {
-      alert(error.message);
+      const messages = {
+        "auth/invalid-credential": "The email or password is incorrect.",
+        "auth/invalid-email": "Enter a valid email address.",
+        "auth/too-many-requests": "Too many attempts. Try again later.",
+      };
+      alert(messages[error.code] || "Unable to sign in. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!email.trim()) {
+      alert("Enter your email first.");
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      alert("Password reset instructions sent.");
+    } catch (error) {
+      alert("Unable to send password reset instructions.");
     }
   };
 
@@ -63,8 +92,18 @@ export default function LoginScreen() {
             value={password}
           />
 
-          <TouchableOpacity style={styles.button} onPress={handleLogin}>
-            <Text style={styles.buttonText}>Login</Text>
+          <TouchableOpacity
+            style={styles.button}
+            onPress={handleLogin}
+            disabled={loading}
+          >
+            <Text style={styles.buttonText}>
+              {loading ? "Signing in..." : "Login"}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={handleForgotPassword}>
+            <Text style={styles.forgotText}>Forgot password?</Text>
           </TouchableOpacity>
 
           <TouchableOpacity onPress={() => navigation.navigate("Signup")}>
@@ -142,5 +181,11 @@ const styles = StyleSheet.create({
   signupLink: {
     color: "#EBFF00",
     fontWeight: "700",
+  },
+  forgotText: {
+    color: "#EBFF00",
+    textAlign: "center",
+    marginTop: 16,
+    fontWeight: "600",
   },
 });
