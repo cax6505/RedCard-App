@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Image,
   Modal,
   ScrollView,
   StyleSheet,
@@ -9,7 +8,7 @@ import {
   TouchableOpacity,
   View,
   Share,
-  Platform,
+  TextInput,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -17,10 +16,10 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { THEME } from "../constants/theme";
-import { FORMATIONS } from "../utils/footballData";
+import { FORMATIONS, getPlayerFace } from "../utils/footballData";
+import { SafeCrest, SafePlayerFace } from "../components/SafeImage";
 
 const API_KEY = "fdd10ed1203d4ce19d9db91b4ff0d8f1";
-const FALLBACK_PHOTO = "https://cdn.sofifa.net/players/notfound_0_120.png";
 
 const normalisePosition = (position = "") => position.toLowerCase();
 
@@ -44,20 +43,19 @@ const isCompatible = (player, role) => {
 
 export default function LineupBuilderScreen() {
   const navigation = useNavigation();
-  const { params } = useRoute();
-  const team = params?.team;
+  const route = useRoute();
+  const team = route.params?.team || {};
 
   const [formationKey, setFormationKey] = useState("4-3-3");
   const [squad, setSquad] = useState(team?.squad || []);
-  const [photos, setPhotos] = useState({});
   const [lineup, setLineup] = useState({});
   const [captainId, setCaptainId] = useState(null);
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [loading, setLoading] = useState(!team?.squad?.length);
-  const [searchFilter, setSearchFilter] = useState("");
+  const [playerSearchQuery, setPlayerSearchQuery] = useState("");
 
   const currentFormation = FORMATIONS[formationKey] || FORMATIONS["4-3-3"];
-  const currentSlots = currentFormation.slots;
+  const currentSlots = currentFormation.slots || [];
 
   useEffect(() => {
     loadTeamAndLineup();
@@ -66,7 +64,7 @@ export default function LineupBuilderScreen() {
   const loadTeamAndLineup = async () => {
     try {
       let nextSquad = team?.squad || [];
-      if (!nextSquad.length) {
+      if (!nextSquad.length && team?.id) {
         const response = await fetch(`https://api.football-data.org/v4/teams/${team.id}`, {
           headers: { "X-Auth-Token": API_KEY },
         });
@@ -77,16 +75,18 @@ export default function LineupBuilderScreen() {
         }
       }
 
-      const savedFormation = await AsyncStorage.getItem(`lineup_formation_${team?.id}`);
-      if (savedFormation && FORMATIONS[savedFormation]) {
-        setFormationKey(savedFormation);
+      if (team?.id) {
+        const savedFormation = await AsyncStorage.getItem(`lineup_formation_${team.id}`);
+        if (savedFormation && FORMATIONS[savedFormation]) {
+          setFormationKey(savedFormation);
+        }
+
+        const savedLineup = await AsyncStorage.getItem(`lineup_${team.id}`);
+        if (savedLineup) setLineup(JSON.parse(savedLineup));
+
+        const savedCaptain = await AsyncStorage.getItem(`lineup_captain_${team.id}`);
+        if (savedCaptain) setCaptainId(savedCaptain);
       }
-
-      const savedLineup = await AsyncStorage.getItem(`lineup_${team?.id}`);
-      if (savedLineup) setLineup(JSON.parse(savedLineup));
-
-      const savedCaptain = await AsyncStorage.getItem(`lineup_captain_${team?.id}`);
-      if (savedCaptain) setCaptainId(savedCaptain);
     } catch (error) {
       console.log("Lineup load error:", error);
     } finally {
@@ -112,6 +112,7 @@ export default function LineupBuilderScreen() {
     const next = { ...lineup, [selectedSlot]: player.id };
     saveLineup(next);
     setSelectedSlot(null);
+    setPlayerSearchQuery("");
   };
 
   const clearSlot = () => {
@@ -119,11 +120,18 @@ export default function LineupBuilderScreen() {
     delete next[selectedSlot];
     saveLineup(next);
     setSelectedSlot(null);
+    setPlayerSearchQuery("");
   };
 
   const resetLineup = () => {
     saveLineup({});
     setCaptainId(null);
+  };
+
+  const handleToggleCaptain = (playerId) => {
+    const nextCaptain = captainId === playerId ? null : playerId;
+    setCaptainId(nextCaptain);
+    saveLineup(lineup, formationKey, nextCaptain);
   };
 
   const handleShareLineup = async () => {
@@ -132,12 +140,13 @@ export default function LineupBuilderScreen() {
         .map(([slotId, playerId]) => {
           const p = squad.find((s) => s.id === playerId);
           const slot = currentSlots.find((s) => s.id === slotId);
-          return `${slot?.label || "P"}: ${p?.name || "Vacant"}`;
+          const cap = captainId === playerId ? " (C)" : "";
+          return `${slot?.label || "P"}: ${p?.name || "Vacant"}${cap}`;
         })
         .join("\n");
 
       await Share.share({
-        message: `My ${formationKey} Starting XI for ${team?.shortName || team?.name} on RedCard:\n\n${selectedNames}`,
+        message: `My ${formationKey} Starting XI for ${team?.shortName || team?.name || "Club"}:\n\n${selectedNames}`,
       });
     } catch (err) {
       console.log(err);
@@ -149,13 +158,19 @@ export default function LineupBuilderScreen() {
 
   const availablePlayers = useMemo(() => {
     return squad
-      .filter((p) => !assignedPlayerIds.has(p.id) || p.id === lineup[selectedSlot])
+      .filter((p) => {
+        const matchesAssignment = !assignedPlayerIds.has(p.id) || p.id === lineup[selectedSlot];
+        const matchesSearch = playerSearchQuery
+          ? p.name.toLowerCase().includes(playerSearchQuery.toLowerCase())
+          : true;
+        return matchesAssignment && matchesSearch;
+      })
       .sort((a, b) => {
         const aCompat = isCompatible(a, activeSlotObj?.role);
         const bCompat = isCompatible(b, activeSlotObj?.role);
         return Number(bCompat) - Number(aCompat);
       });
-  }, [squad, assignedPlayerIds, lineup, selectedSlot, activeSlotObj]);
+  }, [squad, assignedPlayerIds, lineup, selectedSlot, activeSlotObj, playerSearchQuery]);
 
   const filledCount = Object.keys(lineup).length;
 
@@ -183,7 +198,12 @@ export default function LineupBuilderScreen() {
 
           <View style={styles.titleBox}>
             <Text style={styles.headerTitle}>Tactical Board</Text>
-            <Text style={styles.headerSub}>{team?.shortName || team?.name}</Text>
+            <View style={styles.teamSubtitleRow}>
+              {team?.crest && (
+                <SafeCrest source={{ uri: team.crest }} name={team?.shortName} size={14} style={{ marginRight: 5 }} />
+              )}
+              <Text style={styles.headerSub}>{team?.shortName || team?.name || "Starting XI"}</Text>
+            </View>
           </View>
 
           <View style={styles.topRightActions}>
@@ -198,9 +218,13 @@ export default function LineupBuilderScreen() {
         </View>
 
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {/* Formation Selector Pills */}
+          {/* Tactical Formations Horizontal Picker */}
           <View style={styles.formationPickerContainer}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.formationScroll}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.formationScroll}
+            >
               {Object.keys(FORMATIONS).map((key) => {
                 const isSelected = formationKey === key;
                 return (
@@ -208,8 +232,14 @@ export default function LineupBuilderScreen() {
                     key={key}
                     style={[styles.formationPill, isSelected && styles.activeFormationPill]}
                     onPress={() => handleSelectFormation(key)}
+                    activeOpacity={0.8}
                   >
-                    <Text style={[styles.formationPillText, isSelected && styles.activeFormationPillText]}>
+                    <Text
+                      style={[
+                        styles.formationPillText,
+                        isSelected && styles.activeFormationPillText,
+                      ]}
+                    >
                       {key}
                     </Text>
                   </TouchableOpacity>
@@ -220,9 +250,11 @@ export default function LineupBuilderScreen() {
 
           {/* Lineup Status Card */}
           <View style={styles.statusBanner}>
-            <View>
+            <View style={{ flex: 1 }}>
               <Text style={styles.formationCurrentName}>{currentFormation.name}</Text>
-              <Text style={styles.formationSubtitle}>Tap any position token to select player</Text>
+              <Text style={styles.formationSubtitle}>
+                {currentFormation.description || "Tap any position token to select player"}
+              </Text>
             </View>
             <View style={styles.progressBox}>
               <Text style={styles.progressCount}>{filledCount}/11</Text>
@@ -232,11 +264,6 @@ export default function LineupBuilderScreen() {
 
           {/* Realistic Tactical Football Pitch */}
           <View style={styles.pitch}>
-            {/* Pitch Grass Stripes */}
-            <View style={styles.grassStripe1} />
-            <View style={styles.grassStripe2} />
-            <View style={styles.grassStripe3} />
-
             {/* Pitch Markings */}
             <View style={styles.pitchHalfway} />
             <View style={styles.pitchCenterCircle} />
@@ -246,40 +273,51 @@ export default function LineupBuilderScreen() {
             <View style={styles.pitchPenaltyBottom} />
             <View style={styles.pitchGoalBottom} />
 
-            {/* Formation Player Tokens */}
+            {/* Formation Player Tokens with REAL Player Faces */}
             {currentSlots.map((slot) => {
               const assignedPlayerId = lineup[slot.id];
               const player = squad.find((p) => p.id === assignedPlayerId);
               const isCaptain = player && captainId === player.id;
+              const playerFaceUrl = player ? getPlayerFace(player.name) : null;
 
               return (
                 <TouchableOpacity
                   key={slot.id}
                   style={[styles.slotToken, { top: slot.top, left: slot.left }]}
-                  activeOpacity={0.8}
+                  activeOpacity={0.85}
                   onPress={() => setSelectedSlot(slot.id)}
                 >
-                  <View style={[styles.playerBadge, player && styles.playerBadgeFilled]}>
-                    {player ? (
-                      <Text style={styles.playerNumInitial}>
-                        {player.shirtNumber || slot.label}
-                      </Text>
-                    ) : (
-                      <Ionicons name="add" size={16} color="#080a0f" />
-                    )}
-
-                    {isCaptain && (
-                      <View style={styles.captainBadge}>
-                        <Text style={styles.captainText}>C</Text>
+                  {player ? (
+                    <View style={styles.tokenWithPlayer}>
+                      <SafePlayerFace
+                        uri={playerFaceUrl}
+                        name={player.name}
+                        number={player.shirtNumber}
+                        size={42}
+                        borderColor={THEME.colors.primary}
+                      />
+                      {isCaptain && (
+                        <View style={styles.captainBadge}>
+                          <Text style={styles.captainText}>C</Text>
+                        </View>
+                      )}
+                      <View style={styles.slotNamePill}>
+                        <Text style={styles.slotPlayerName} numberOfLines={1}>
+                          {player.name ? player.name.split(" ").pop() : slot.label}
+                        </Text>
                       </View>
-                    )}
-                  </View>
-
-                  <View style={styles.slotNamePill}>
-                    <Text style={styles.slotPlayerName} numberOfLines={1}>
-                      {player ? player.name.split(" ").pop() : slot.label}
-                    </Text>
-                  </View>
+                      <Text style={styles.slotRoleTag}>{slot.label}</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.emptyTokenContainer}>
+                      <View style={styles.emptyTokenCircle}>
+                        <Ionicons name="add" size={18} color={THEME.colors.primary} />
+                      </View>
+                      <View style={styles.emptySlotLabelPill}>
+                        <Text style={styles.emptySlotLabelText}>{slot.label}</Text>
+                      </View>
+                    </View>
+                  )}
                 </TouchableOpacity>
               );
             })}
@@ -291,13 +329,19 @@ export default function LineupBuilderScreen() {
           visible={Boolean(selectedSlot)}
           transparent
           animationType="slide"
-          onRequestClose={() => setSelectedSlot(null)}
+          onRequestClose={() => {
+            setSelectedSlot(null);
+            setPlayerSearchQuery("");
+          }}
         >
           <View style={styles.modalOverlay}>
             <TouchableOpacity
               style={styles.modalBackdrop}
               activeOpacity={1}
-              onPress={() => setSelectedSlot(null)}
+              onPress={() => {
+                setSelectedSlot(null);
+                setPlayerSearchQuery("");
+              }}
             />
 
             <View style={styles.modalSheet}>
@@ -313,31 +357,66 @@ export default function LineupBuilderScreen() {
 
                 {lineup[selectedSlot] && (
                   <TouchableOpacity style={styles.clearSlotBtn} onPress={clearSlot}>
-                    <Ionicons name="trash-outline" size={16} color="#ff2a44" style={{ marginRight: 4 }} />
+                    <Ionicons name="trash-outline" size={15} color="#ff2a44" style={{ marginRight: 4 }} />
                     <Text style={styles.clearSlotText}>Remove</Text>
                   </TouchableOpacity>
                 )}
+              </View>
+
+              {/* Player Search Input */}
+              <View style={styles.searchBarContainer}>
+                <Ionicons name="search-outline" size={16} color="rgba(255,255,255,0.4)" style={{ marginRight: 8 }} />
+                <TextInput
+                  placeholder="Filter squad members..."
+                  placeholderTextColor="rgba(255,255,255,0.4)"
+                  value={playerSearchQuery}
+                  onChangeText={setPlayerSearchQuery}
+                  style={styles.searchInput}
+                  clearButtonMode="while-editing"
+                />
               </View>
 
               <ScrollView style={styles.playerPickerList} showsVerticalScrollIndicator={false}>
                 {availablePlayers.map((p) => {
                   const compat = isCompatible(p, activeSlotObj?.role);
                   const isAssigned = lineup[selectedSlot] === p.id;
+                  const isCurrentCap = captainId === p.id;
+                  const playerPhoto = getPlayerFace(p.name);
 
                   return (
                     <TouchableOpacity
                       key={p.id}
                       style={[styles.pickerItem, isAssigned && styles.pickerItemActive]}
                       onPress={() => selectPlayer(p)}
+                      activeOpacity={0.8}
                     >
-                      <View style={styles.pickerNumberCircle}>
-                        <Text style={styles.pickerNumberText}>{p.shirtNumber || "—"}</Text>
-                      </View>
+                      {/* Player Face Photo */}
+                      <SafePlayerFace
+                        uri={playerPhoto}
+                        name={p.name}
+                        number={p.shirtNumber}
+                        size={38}
+                        style={{ marginRight: 12 }}
+                      />
 
                       <View style={styles.pickerInfoCol}>
-                        <Text style={styles.pickerName}>{p.name}</Text>
-                        <Text style={styles.pickerPos}>{p.position || "Squad"}</Text>
+                        <Text style={styles.pickerName} numberOfLines={1}>
+                          {p.name}
+                        </Text>
+                        <Text style={styles.pickerPos}>
+                          {p.position || "Squad Member"} {p.shirtNumber ? `• #${p.shirtNumber}` : ""}
+                        </Text>
                       </View>
+
+                      {/* Captain Action */}
+                      <TouchableOpacity
+                        style={[styles.capButton, isCurrentCap && styles.activeCapButton]}
+                        onPress={() => handleToggleCaptain(p.id)}
+                      >
+                        <Text style={[styles.capButtonText, isCurrentCap && styles.activeCapButtonText]}>
+                          {isCurrentCap ? "CAPTAIN" : "MAKE CAP"}
+                        </Text>
+                      </TouchableOpacity>
 
                       {compat ? (
                         <View style={styles.compatChip}>
@@ -393,14 +472,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "900",
     color: "#fff",
   },
+  teamSubtitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 2,
+  },
   headerSub: {
     fontSize: 12,
-    color: "rgba(255, 255, 255, 0.55)",
-    marginTop: 1,
+    color: "rgba(255, 255, 255, 0.6)",
+    fontWeight: "600",
   },
   topRightActions: {
     flexDirection: "row",
@@ -408,46 +492,42 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 16,
-    paddingBottom: 130,
+    paddingBottom: 40,
   },
-
-  // Formation Picker
   formationPickerContainer: {
     marginTop: 6,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   formationScroll: {
     gap: 8,
   },
   formationPill: {
-    paddingVertical: 7,
     paddingHorizontal: 16,
+    paddingVertical: 8,
     borderRadius: 18,
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.08)",
   },
   activeFormationPill: {
     backgroundColor: THEME.colors.primary,
+    borderColor: THEME.colors.primary,
   },
   formationPillText: {
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: 12,
+    fontWeight: "800",
     color: "rgba(255, 255, 255, 0.7)",
   },
   activeFormationPillText: {
     color: "#080a0f",
-    fontWeight: "900",
   },
-
-  // Status Banner
   statusBanner: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    backgroundColor: "rgba(22, 28, 40, 0.65)",
-    borderRadius: 18,
-    padding: 16,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    padding: 14,
+    borderRadius: 16,
     marginBottom: 14,
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.08)",
@@ -461,16 +541,17 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "rgba(255, 255, 255, 0.5)",
     marginTop: 2,
+    paddingRight: 10,
   },
   progressBox: {
     alignItems: "center",
-    backgroundColor: "rgba(215, 252, 90, 0.15)",
-    paddingHorizontal: 12,
+    backgroundColor: "rgba(215, 252, 90, 0.12)",
+    paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 12,
+    borderRadius: 10,
   },
   progressCount: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "900",
     color: THEME.colors.primary,
   },
@@ -478,41 +559,18 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: "800",
     color: THEME.colors.primary,
+    marginTop: 1,
   },
 
-  // Tactical Pitch Graphic
+  // Tactical Pitch
   pitch: {
-    height: 480,
-    backgroundColor: "#164023",
+    height: 520,
+    backgroundColor: "#13381c",
     borderRadius: 24,
     borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.45)",
+    borderColor: "rgba(255, 255, 255, 0.35)",
     position: "relative",
     overflow: "hidden",
-  },
-  grassStripe1: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: "25%",
-    backgroundColor: "rgba(255, 255, 255, 0.02)",
-  },
-  grassStripe2: {
-    position: "absolute",
-    top: "50%",
-    left: 0,
-    right: 0,
-    height: "25%",
-    backgroundColor: "rgba(255, 255, 255, 0.02)",
-  },
-  grassStripe3: {
-    position: "absolute",
-    top: "75%",
-    left: 0,
-    right: 0,
-    height: "25%",
-    backgroundColor: "rgba(0, 0, 0, 0.04)",
   },
   pitchHalfway: {
     position: "absolute",
@@ -520,7 +578,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 2,
-    backgroundColor: "rgba(255, 255, 255, 0.4)",
+    backgroundColor: "rgba(255, 255, 255, 0.3)",
   },
   pitchCenterCircle: {
     position: "absolute",
@@ -532,7 +590,7 @@ const styles = StyleSheet.create({
     marginTop: -45,
     marginLeft: -45,
     borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.4)",
+    borderColor: "rgba(255, 255, 255, 0.3)",
   },
   pitchCenterSpot: {
     position: "absolute",
@@ -543,7 +601,7 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     marginTop: -3,
     marginLeft: -3,
-    backgroundColor: "rgba(255, 255, 255, 0.8)",
+    backgroundColor: "rgba(255, 255, 255, 0.7)",
   },
   pitchPenaltyTop: {
     position: "absolute",
@@ -554,7 +612,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderLeftWidth: 2,
     borderRightWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.4)",
+    borderColor: "rgba(255, 255, 255, 0.3)",
   },
   pitchGoalTop: {
     position: "absolute",
@@ -565,7 +623,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderLeftWidth: 2,
     borderRightWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.4)",
+    borderColor: "rgba(255, 255, 255, 0.3)",
   },
   pitchPenaltyBottom: {
     position: "absolute",
@@ -576,7 +634,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 2,
     borderLeftWidth: 2,
     borderRightWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.4)",
+    borderColor: "rgba(255, 255, 255, 0.3)",
   },
   pitchGoalBottom: {
     position: "absolute",
@@ -587,47 +645,31 @@ const styles = StyleSheet.create({
     borderTopWidth: 2,
     borderLeftWidth: 2,
     borderRightWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.4)",
+    borderColor: "rgba(255, 255, 255, 0.3)",
   },
 
-  // Slot Tokens
+  // Pitch Slots
   slotToken: {
     position: "absolute",
-    transform: [{ translateX: -25 }, { translateY: -25 }],
+    transform: [{ translateX: -26 }, { translateY: -26 }],
     alignItems: "center",
-    width: 50,
+    width: 52,
   },
-  playerBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
-    borderWidth: 2,
-    borderColor: "#fff",
+  tokenWithPlayer: {
     alignItems: "center",
-    justifyContent: "center",
     position: "relative",
-  },
-  playerBadgeFilled: {
-    backgroundColor: THEME.colors.primary,
-    borderColor: "#080a0f",
-  },
-  playerNumInitial: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "#080a0f",
   },
   captainBadge: {
     position: "absolute",
-    top: -4,
+    top: -2,
     right: -4,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: "#ffd700",
+    backgroundColor: "#ffd600",
+    width: 17,
+    height: 17,
+    borderRadius: 8.5,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: "#080a0f",
   },
   captainText: {
@@ -636,42 +678,74 @@ const styles = StyleSheet.create({
     color: "#080a0f",
   },
   slotNamePill: {
-    backgroundColor: "rgba(8, 10, 15, 0.8)",
+    backgroundColor: "rgba(0, 0, 0, 0.8)",
     paddingHorizontal: 5,
     paddingVertical: 1.5,
-    borderRadius: 6,
+    borderRadius: 4,
     marginTop: 3,
+    maxWidth: 58,
   },
   slotPlayerName: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: "800",
-    color: "#ffffff",
+    color: "#fff",
     textAlign: "center",
   },
+  slotRoleTag: {
+    fontSize: 8,
+    fontWeight: "800",
+    color: "rgba(255, 255, 255, 0.7)",
+  },
+  emptyTokenContainer: {
+    alignItems: "center",
+  },
+  emptyTokenCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 2,
+    borderColor: THEME.colors.primary,
+    borderStyle: "dashed",
+    backgroundColor: "rgba(215, 252, 90, 0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptySlotLabelPill: {
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    marginTop: 3,
+  },
+  emptySlotLabelText: {
+    fontSize: 9,
+    fontWeight: "900",
+    color: THEME.colors.primary,
+  },
 
-  // Modal
+  // Modal Sheet
   modalOverlay: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(0,0,0,0.75)",
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0, 0, 0, 0.75)",
   },
   modalSheet: {
-    backgroundColor: "#121722",
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    padding: 20,
+    backgroundColor: "#101622",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     maxHeight: "75%",
+    padding: 20,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.12)",
+    borderColor: "rgba(255, 255, 255, 0.1)",
   },
   modalHandle: {
-    width: 44,
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: "rgba(255, 255, 255, 0.25)",
+    width: 40,
+    height: 4,
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    borderRadius: 2,
     alignSelf: "center",
     marginBottom: 14,
   },
@@ -679,7 +753,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 14,
+    marginBottom: 12,
   },
   modalSheetTitle: {
     fontSize: 18,
@@ -694,46 +768,48 @@ const styles = StyleSheet.create({
   clearSlotBtn: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255, 42, 68, 0.15)",
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 10,
+    backgroundColor: "rgba(255, 42, 68, 0.15)",
   },
   clearSlotText: {
-    color: "#ff2a44",
     fontSize: 12,
     fontWeight: "800",
+    color: "#ff2a44",
+  },
+  searchBarContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+  },
+  searchInput: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 13,
+    padding: 0,
   },
   playerPickerList: {
-    marginBottom: 20,
+    maxHeight: 360,
   },
   pickerItem: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 10,
+    padding: 10,
     borderRadius: 14,
     backgroundColor: "rgba(255, 255, 255, 0.04)",
     marginBottom: 8,
   },
   pickerItemActive: {
-    backgroundColor: "rgba(215, 252, 90, 0.15)",
+    backgroundColor: "rgba(215, 252, 90, 0.12)",
     borderWidth: 1,
     borderColor: THEME.colors.primary,
-  },
-  pickerNumberCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-  pickerNumberText: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: THEME.colors.primary,
   },
   pickerInfoCol: {
     flex: 1,
@@ -744,9 +820,27 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
   pickerPos: {
-    fontSize: 12,
+    fontSize: 11,
     color: "rgba(255, 255, 255, 0.5)",
-    marginTop: 1,
+    marginTop: 2,
+  },
+  capButton: {
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    marginRight: 8,
+  },
+  activeCapButton: {
+    backgroundColor: "#ffd600",
+  },
+  capButtonText: {
+    fontSize: 9,
+    fontWeight: "900",
+    color: "rgba(255, 255, 255, 0.8)",
+  },
+  activeCapButtonText: {
+    color: "#080a0f",
   },
   compatChip: {
     backgroundColor: "rgba(0, 230, 118, 0.15)",
@@ -755,19 +849,19 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   compatText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "800",
     color: "#00e676",
   },
   altChip: {
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
   },
   altText: {
-    fontSize: 11,
-    fontWeight: "600",
+    fontSize: 10,
+    fontWeight: "800",
     color: "rgba(255, 255, 255, 0.45)",
   },
 });

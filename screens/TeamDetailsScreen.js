@@ -19,6 +19,8 @@ import { THEME } from "../constants/theme";
 import { auth, db } from "../firebase";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { getCache, setCache } from "../utils/cache";
+import { SafeCrest, SafePlayerFace } from "../components/SafeImage";
+import { getPlayerFace } from "../utils/footballData";
 
 const API_KEY = "fdd10ed1203d4ce19d9db91b4ff0d8f1";
 
@@ -305,9 +307,13 @@ export default function TeamDetailsScreen() {
                       activeOpacity={0.75}
                       onPress={() => handleSelectPlayer(p)}
                     >
-                      <View style={styles.playerNumCircle}>
-                        <Text style={styles.playerNumText}>{p.shirtNumber || idx + 1}</Text>
-                      </View>
+                      <SafePlayerFace
+                        uri={getPlayerFace(p.name)}
+                        name={p.name}
+                        number={p.shirtNumber}
+                        size={36}
+                        style={{ marginRight: 12 }}
+                      />
 
                       <View style={styles.playerInfoColumn}>
                         <Text style={styles.playerRowName}>{p.name}</Text>

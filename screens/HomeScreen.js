@@ -18,6 +18,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { setCache, getCache } from "../utils/cache";
 import { THEME } from "../constants/theme";
 import { LEAGUES } from "../utils/footballData";
+import { SafeCrest } from "../components/SafeImage";
 
 const API_KEY = "fdd10ed1203d4ce19d9db91b4ff0d8f1";
 const COMPETITIONS = "PL,PD,BL1,SA,FL1";
@@ -95,7 +96,7 @@ export default function HomeScreen({ navigation }) {
     const dayName = d.toLocaleDateString("en-US", { weekday: "short" });
     const date = `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
     const time = `${hours}:${minutes} ${ampm}`;
-    return { dayName, date, time, rawDate: d };
+    return { dayName, date, time, rawDate: d.toISOString() };
   };
 
   const fetchMatches = async () => {
@@ -325,7 +326,7 @@ export default function HomeScreen({ navigation }) {
 
           <View style={styles.spotlightMatchRow}>
             <View style={styles.spotlightTeam}>
-              <Image source={spotlightMatch.homeLogo} style={styles.spotlightLogo} />
+              <SafeCrest source={spotlightMatch.homeLogo} name={spotlightMatch.home} size={48} />
               <Text style={styles.spotlightTeamName} numberOfLines={1}>
                 {spotlightMatch.home}
               </Text>
@@ -346,7 +347,7 @@ export default function HomeScreen({ navigation }) {
             </View>
 
             <View style={styles.spotlightTeam}>
-              <Image source={spotlightMatch.awayLogo} style={styles.spotlightLogo} />
+              <SafeCrest source={spotlightMatch.awayLogo} name={spotlightMatch.away} size={48} />
               <Text style={styles.spotlightTeamName} numberOfLines={1}>
                 {spotlightMatch.away}
               </Text>
@@ -425,7 +426,7 @@ export default function HomeScreen({ navigation }) {
           <View style={styles.cardBody}>
             {/* Home Team */}
             <View style={styles.cardTeam}>
-              <Image source={match.homeLogo} style={styles.teamLogo} resizeMode="contain" />
+              <SafeCrest source={match.homeLogo} name={match.home} size={30} style={{ marginBottom: 4 }} />
               <Text style={styles.teamName} numberOfLines={1}>
                 {match.home}
               </Text>
@@ -447,7 +448,7 @@ export default function HomeScreen({ navigation }) {
 
             {/* Away Team */}
             <View style={styles.cardTeam}>
-              <Image source={match.awayLogo} style={styles.teamLogo} resizeMode="contain" />
+              <SafeCrest source={match.awayLogo} name={match.away} size={30} style={{ marginBottom: 4 }} />
               <Text style={styles.teamName} numberOfLines={1}>
                 {match.away}
               </Text>
@@ -464,10 +465,10 @@ export default function HomeScreen({ navigation }) {
       <View style={styles.navbar}>
         <View style={styles.brandContainer}>
           <View style={styles.brandIcon}>
-            <View style={styles.redCardIcon} />
+            <Ionicons name="football" size={18} color={THEME.colors.primary} />
           </View>
           <Text style={styles.brandTitle}>
-            RED<Text style={styles.brandAccent}>CARD</Text>
+            MATCH <Text style={styles.brandAccent}>CENTRE</Text>
           </Text>
         </View>
 
@@ -566,13 +567,30 @@ export default function HomeScreen({ navigation }) {
         >
           {LEAGUES.map((league) => {
             const isSelected = selectedLeague === league.id;
+            const iconColor = isSelected ? "#080a0f" : THEME.colors.primary;
+
             return (
               <TouchableOpacity
                 key={league.id}
                 style={[styles.leaguePill, isSelected && styles.activeLeaguePill]}
                 onPress={() => setSelectedLeague(league.id)}
+                activeOpacity={0.8}
               >
-                <Text style={styles.leagueFlag}>{league.flag}</Text>
+                {league.iconFamily === "MaterialCommunityIcons" ? (
+                  <MaterialCommunityIcons
+                    name={league.icon}
+                    size={15}
+                    color={iconColor}
+                    style={{ marginRight: 6 }}
+                  />
+                ) : (
+                  <Ionicons
+                    name={league.icon}
+                    size={15}
+                    color={iconColor}
+                    style={{ marginRight: 6 }}
+                  />
+                )}
                 <Text style={[styles.leaguePillText, isSelected && styles.activeLeaguePillText]}>
                   {league.name}
                 </Text>

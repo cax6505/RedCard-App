@@ -1,14 +1,12 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  Image,
   TouchableOpacity,
   Dimensions,
   Animated,
-  Platform,
   Share,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
@@ -17,20 +15,30 @@ import { useNavigation, useRoute } from "@react-navigation/native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { THEME } from "../constants/theme";
 import { getRichMatchDetails } from "../utils/footballData";
+import { SafeCrest, SafePlayerFace } from "../components/SafeImage";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
 export default function MatchDetailsScreen() {
   const navigation = useNavigation();
-  const { params } = useRoute();
-  const match = params?.match;
+  const route = useRoute();
+  const match = route.params?.match || {};
 
   const [activeTab, setActiveTab] = useState("Timeline"); // Timeline, Lineups, Stats, H2H, Commentary
-  const [lineupTeam, setLineupTeam] = useState("home"); // home or away for lineup view
-  const [details, setDetails] = useState(null);
+  const [lineupTeam, setLineupTeam] = useState("home"); // home or away
   const [isPinned, setIsPinned] = useState(false);
 
-  // Pulse animation for live match badge
+  // Synchronously compute details to guarantee NO null pointer render crashes
+  const details = useMemo(() => {
+    try {
+      return getRichMatchDetails(match);
+    } catch (e) {
+      console.log("Error computing match details:", e);
+      return null;
+    }
+  }, [match]);
+
+  // Pulse animation for live badge
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
@@ -42,30 +50,26 @@ export default function MatchDetailsScreen() {
     ).start();
   }, [pulseAnim]);
 
-  useEffect(() => {
-    if (match) {
-      const rich = getRichMatchDetails(match);
-      setDetails(rich);
-    }
-  }, [match]);
-
   const handleShare = async () => {
     try {
       await Share.share({
-        message: `Follow ${match?.home} vs ${match?.away} on RedCard Football App! Score: ${match?.score || "Upcoming"}`,
+        message: `Match Update: ${match.home || "Home"} vs ${match.away || "Away"}\nScore: ${
+          match.score || match.time || "Upcoming"
+        }\nVenue: ${details?.venue || "Stadium"}`,
       });
     } catch (err) {
       console.log(err);
     }
   };
 
-  if (!match) {
+  if (!match || !match.home) {
     return (
       <LinearGradient colors={THEME.colors.gradientBackground} style={styles.screen}>
         <SafeAreaView style={styles.emptyContainer}>
+          <Ionicons name="alert-circle-outline" size={48} color={THEME.colors.primary} />
           <Text style={styles.emptyTitle}>Match Details Unavailable</Text>
           <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-            <Text style={styles.backButtonText}>Go Back</Text>
+            <Text style={styles.backButtonText}>Return to Matches</Text>
           </TouchableOpacity>
         </SafeAreaView>
       </LinearGradient>
@@ -85,7 +89,7 @@ export default function MatchDetailsScreen() {
           <Ionicons name="time-outline" size={42} color="rgba(255,255,255,0.3)" />
           <Text style={styles.tabEmptyTitle}>Match Has Not Kicked Off</Text>
           <Text style={styles.tabEmptySub}>
-            Live events, goals, cards, and substitutions will stream here in real-time.
+            Live events, goals, disciplinary cards, and substitutions will stream here in real-time.
           </Text>
         </View>
       );
@@ -101,13 +105,31 @@ export default function MatchDetailsScreen() {
           const isSub = ev.type === "sub";
 
           return (
-            <View key={idx} style={[styles.timelineRow, isHome ? styles.timelineRowHome : styles.timelineRowAway]}>
+            <View
+              key={idx}
+              style={[
+                styles.timelineRow,
+                isHome ? styles.timelineRowHome : styles.timelineRowAway,
+              ]}
+            >
               {/* Left / Home Event */}
               <View style={[styles.eventContent, !isHome && styles.eventContentHidden]}>
                 {isHome && (
                   <View style={styles.eventBubble}>
-                    <Text style={styles.eventPlayer}>{isSub ? `${ev.playerIn} (IN)` : ev.player}</Text>
-                    {isSub && <Text style={styles.eventSubOut}>{ev.playerOut} (OUT)</Text>}
+                    <View style={styles.eventPlayerRow}>
+                      <SafePlayerFace
+                        uri={ev.photo}
+                        name={ev.player}
+                        size={28}
+                        style={{ marginRight: 8 }}
+                      />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.eventPlayer} numberOfLines={1}>
+                          {isSub ? `${ev.playerIn} (IN)` : ev.player}
+                        </Text>
+                        {isSub && <Text style={styles.eventSubOut}>{ev.playerOut} (OUT)</Text>}
+                      </View>
+                    </View>
                     <Text style={styles.eventDetail}>{ev.detail}</Text>
                   </View>
                 )}
@@ -125,7 +147,7 @@ export default function MatchDetailsScreen() {
                   ]}
                 >
                   {isGoal ? (
-                    <Text style={styles.eventIcon}>⚽</Text>
+                    <Ionicons name="football" size={13} color="#00e676" />
                   ) : isRed ? (
                     <View style={styles.miniRedCard} />
                   ) : isYellow ? (
@@ -143,9 +165,21 @@ export default function MatchDetailsScreen() {
               <View style={[styles.eventContent, isHome && styles.eventContentHidden]}>
                 {!isHome && (
                   <View style={[styles.eventBubble, styles.eventBubbleAway]}>
-                    <Text style={styles.eventPlayer}>{isSub ? `${ev.playerIn} (IN)` : ev.player}</Text>
-                    {isSub && <Text style={styles.eventSubOut}>{ev.playerOut} (OUT)</Text>}
-                    <Text style={styles.eventDetail}>{ev.detail}</Text>
+                    <View style={[styles.eventPlayerRow, { flexDirection: "row-reverse" }]}>
+                      <SafePlayerFace
+                        uri={ev.photo}
+                        name={ev.player}
+                        size={28}
+                        style={{ marginLeft: 8 }}
+                      />
+                      <View style={{ flex: 1, alignItems: "flex-end" }}>
+                        <Text style={styles.eventPlayer} numberOfLines={1}>
+                          {isSub ? `${ev.playerIn} (IN)` : ev.player}
+                        </Text>
+                        {isSub && <Text style={styles.eventSubOut}>{ev.playerOut} (OUT)</Text>}
+                      </View>
+                    </View>
+                    <Text style={[styles.eventDetail, { textAlign: "right" }]}>{ev.detail}</Text>
                   </View>
                 )}
               </View>
@@ -153,7 +187,7 @@ export default function MatchDetailsScreen() {
           );
         })}
 
-        {/* Milestone full-time chip */}
+        {/* Milestone chip */}
         <View style={styles.milestoneRow}>
           <View style={styles.milestonePill}>
             <Text style={styles.milestoneText}>
@@ -165,11 +199,13 @@ export default function MatchDetailsScreen() {
     );
   };
 
-  // RENDER: Lineups & Tactical Pitch
+  // RENDER: Lineups & Tactical Pitch with Real Player Faces
   const renderLineups = () => {
     const lineupData = lineupTeam === "home" ? details?.homeLineup : details?.awayLineup;
     const teamName = lineupTeam === "home" ? match.home : match.away;
     const teamLogo = lineupTeam === "home" ? match.homeLogo : match.awayLogo;
+    const startingXI = lineupData?.startingXI || [];
+    const subs = lineupData?.subs || [];
 
     return (
       <View style={styles.lineupsContainer}>
@@ -178,9 +214,16 @@ export default function MatchDetailsScreen() {
           <TouchableOpacity
             style={[styles.lineupToggleBtn, lineupTeam === "home" && styles.activeLineupToggleBtn]}
             onPress={() => setLineupTeam("home")}
+            activeOpacity={0.8}
           >
-            <Image source={match.homeLogo} style={styles.toggleLogo} />
-            <Text style={[styles.lineupToggleText, lineupTeam === "home" && styles.activeLineupToggleText]} numberOfLines={1}>
+            <SafeCrest source={match.homeLogo} name={match.home} size={22} />
+            <Text
+              style={[
+                styles.lineupToggleText,
+                lineupTeam === "home" && styles.activeLineupToggleText,
+              ]}
+              numberOfLines={1}
+            >
               {match.home}
             </Text>
           </TouchableOpacity>
@@ -188,9 +231,16 @@ export default function MatchDetailsScreen() {
           <TouchableOpacity
             style={[styles.lineupToggleBtn, lineupTeam === "away" && styles.activeLineupToggleBtn]}
             onPress={() => setLineupTeam("away")}
+            activeOpacity={0.8}
           >
-            <Image source={match.awayLogo} style={styles.toggleLogo} />
-            <Text style={[styles.lineupToggleText, lineupTeam === "away" && styles.activeLineupToggleText]} numberOfLines={1}>
+            <SafeCrest source={match.awayLogo} name={match.away} size={22} />
+            <Text
+              style={[
+                styles.lineupToggleText,
+                lineupTeam === "away" && styles.activeLineupToggleText,
+              ]}
+              numberOfLines={1}
+            >
               {match.away}
             </Text>
           </TouchableOpacity>
@@ -199,15 +249,15 @@ export default function MatchDetailsScreen() {
         {/* Formation & Manager Header */}
         <View style={styles.formationBar}>
           <View>
-            <Text style={styles.formationTitle}>{lineupData?.formation} Formation</Text>
-            <Text style={styles.managerText}>Manager: {lineupData?.manager}</Text>
+            <Text style={styles.formationTitle}>{lineupData?.formation || "4-3-3"} Formation</Text>
+            <Text style={styles.managerText}>Manager: {lineupData?.manager || "Head Coach"}</Text>
           </View>
           <View style={styles.tacticalBadge}>
             <Text style={styles.tacticalBadgeText}>STARTING XI</Text>
           </View>
         </View>
 
-        {/* Tactical Pitch Graphic */}
+        {/* Tactical Pitch Graphic with REAL Player Faces */}
         <View style={styles.pitch}>
           {/* Pitch Markings */}
           <View style={styles.pitchHalfway} />
@@ -218,21 +268,36 @@ export default function MatchDetailsScreen() {
           <View style={styles.pitchPenaltyBottom} />
           <View style={styles.pitchGoalBottom} />
 
-          {/* Starting XI Player Pins */}
-          {lineupData?.startingXI.map((player, idx) => (
+          {/* Starting XI Player Pins with Faces */}
+          {startingXI.map((player, idx) => (
             <View
               key={idx}
               style={[
                 styles.playerPin,
-                { top: player.grid.top, left: player.grid.left },
+                { top: player.grid?.top || "50%", left: player.grid?.left || "50%" },
               ]}
             >
-              <View style={[styles.jerseyCircle, lineupTeam === "away" && styles.jerseyAway]}>
-                <Text style={styles.jerseyNumber}>{player.num}</Text>
+              <View style={styles.playerAvatarWrapper}>
+                <SafePlayerFace
+                  uri={player.photo}
+                  name={player.name}
+                  number={player.num}
+                  size={36}
+                  borderColor={lineupTeam === "home" ? THEME.colors.primary : "#00b0ff"}
+                />
+                <View
+                  style={[
+                    styles.jerseyBadgeSmall,
+                    lineupTeam === "away" && styles.jerseyBadgeAway,
+                  ]}
+                >
+                  <Text style={styles.jerseyBadgeText}>{player.num}</Text>
+                </View>
               </View>
+
               <View style={styles.playerNamePill}>
                 <Text style={styles.playerPinName} numberOfLines={1}>
-                  {player.name}
+                  {player.name ? player.name.split(" ").pop() : player.pos}
                 </Text>
               </View>
               <Text style={styles.playerPinPos}>{player.pos}</Text>
@@ -244,9 +309,9 @@ export default function MatchDetailsScreen() {
         <View style={styles.benchCard}>
           <Text style={styles.benchTitle}>Substitutes Bench</Text>
           <View style={styles.benchList}>
-            {lineupData?.subs.map((sub, idx) => (
+            {subs.map((sub, idx) => (
               <View key={idx} style={styles.subItem}>
-                <View style={styles.subDot} />
+                <SafePlayerFace name={sub} size={22} style={{ marginRight: 6 }} />
                 <Text style={styles.subName}>{sub}</Text>
               </View>
             ))}
@@ -265,12 +330,12 @@ export default function MatchDetailsScreen() {
         {/* Teams Legend Header */}
         <View style={styles.statsLegend}>
           <View style={styles.legendTeam}>
-            <Image source={match.homeLogo} style={styles.legendLogo} />
+            <SafeCrest source={match.homeLogo} name={match.home} size={24} style={{ marginRight: 6 }} />
             <Text style={styles.legendTeamName} numberOfLines={1}>{match.home}</Text>
           </View>
           <Text style={styles.legendVs}>COMPARISON</Text>
           <View style={styles.legendTeam}>
-            <Image source={match.awayLogo} style={styles.legendLogo} />
+            <SafeCrest source={match.awayLogo} name={match.away} size={24} style={{ marginRight: 6 }} />
             <Text style={styles.legendTeamName} numberOfLines={1}>{match.away}</Text>
           </View>
         </View>
@@ -332,11 +397,11 @@ export default function MatchDetailsScreen() {
           {/* Home Form */}
           <View style={styles.formRow}>
             <View style={styles.formTeamLeft}>
-              <Image source={match.homeLogo} style={styles.formLogo} />
+              <SafeCrest source={match.homeLogo} name={match.home} size={22} style={{ marginRight: 8 }} />
               <Text style={styles.formTeamName} numberOfLines={1}>{match.home}</Text>
             </View>
             <View style={styles.formBadges}>
-              {h2h?.homeForm?.map((f, i) => (
+              {(h2h?.homeForm || ["W", "D", "W"]).map((f, i) => (
                 <View
                   key={i}
                   style={[
@@ -355,11 +420,11 @@ export default function MatchDetailsScreen() {
           {/* Away Form */}
           <View style={styles.formRow}>
             <View style={styles.formTeamLeft}>
-              <Image source={match.awayLogo} style={styles.formLogo} />
+              <SafeCrest source={match.awayLogo} name={match.away} size={22} style={{ marginRight: 8 }} />
               <Text style={styles.formTeamName} numberOfLines={1}>{match.away}</Text>
             </View>
             <View style={styles.formBadges}>
-              {h2h?.awayForm?.map((f, i) => (
+              {(h2h?.awayForm || ["D", "W", "L"]).map((f, i) => (
                 <View
                   key={i}
                   style={[
@@ -379,7 +444,7 @@ export default function MatchDetailsScreen() {
         {/* Previous Meetings List */}
         <View style={styles.recentMeetingsBox}>
           <Text style={styles.recentMeetingsTitle}>Recent Head-to-Head Encounters</Text>
-          {h2h?.recentMeetings?.map((m, idx) => (
+          {(h2h?.recentMeetings || []).map((m, idx) => (
             <View key={idx} style={styles.meetingItem}>
               <Text style={styles.meetingDate}>{m.date}</Text>
               <Text style={styles.meetingScore}>{m.score}</Text>
@@ -468,7 +533,7 @@ export default function MatchDetailsScreen() {
               {isLive ? (
                 <View style={styles.liveArenaBadge}>
                   <Animated.View style={[styles.pulseRedDot, { opacity: pulseAnim }]} />
-                  <Text style={styles.liveArenaText}>LIVE 74' • IN PLAY</Text>
+                  <Text style={styles.liveArenaText}>LIVE {match.minute || "IN PLAY"}</Text>
                 </View>
               ) : isScheduled ? (
                 <View style={styles.scheduledBadge}>
@@ -483,9 +548,9 @@ export default function MatchDetailsScreen() {
 
             {/* Teams Faceoff */}
             <View style={styles.arenaTeamsRow}>
-              {/* Home */}
+              {/* Home Team */}
               <View style={styles.arenaTeamCol}>
-                <Image source={match.homeLogo} style={styles.arenaLogo} resizeMode="contain" />
+                <SafeCrest source={match.homeLogo} name={match.home} size={58} />
                 <Text style={styles.arenaTeamName}>{match.home}</Text>
               </View>
 
@@ -499,14 +564,14 @@ export default function MatchDetailsScreen() {
                 ) : (
                   <>
                     <Text style={styles.arenaTime}>{match.time || "20:00"}</Text>
-                    <Text style={styles.arenaDate}>{match.date}</Text>
+                    <Text style={styles.arenaDate}>{match.date || "Today"}</Text>
                   </>
                 )}
               </View>
 
-              {/* Away */}
+              {/* Away Team */}
               <View style={styles.arenaTeamCol}>
-                <Image source={match.awayLogo} style={styles.arenaLogo} resizeMode="contain" />
+                <SafeCrest source={match.awayLogo} name={match.away} size={58} />
                 <Text style={styles.arenaTeamName}>{match.away}</Text>
               </View>
             </View>
@@ -534,6 +599,7 @@ export default function MatchDetailsScreen() {
                     key={tab}
                     style={[styles.tabButton, isActive && styles.activeTabButton]}
                     onPress={() => setActiveTab(tab)}
+                    activeOpacity={0.8}
                   >
                     <Text style={[styles.tabButtonText, isActive && styles.activeTabButtonText]}>
                       {tab}
@@ -597,7 +663,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   mainScrollView: { flex: 1 },
-  mainScrollContent: { paddingHorizontal: 16, paddingBottom: 120 },
+  mainScrollContent: { paddingHorizontal: 16, paddingBottom: 60 },
 
   // Arena Card
   arenaCard: {
@@ -666,10 +732,6 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
   },
-  arenaLogo: {
-    width: 64,
-    height: 64,
-  },
   arenaTeamName: {
     fontSize: 15,
     fontWeight: "800",
@@ -682,7 +744,7 @@ const styles = StyleSheet.create({
     minWidth: 110,
   },
   arenaScore: {
-    fontSize: 40,
+    fontSize: 38,
     fontWeight: "900",
     color: "#ffffff",
     letterSpacing: 2,
@@ -779,6 +841,11 @@ const styles = StyleSheet.create({
   eventBubbleAway: {
     alignItems: "flex-end",
   },
+  eventPlayerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 4,
+  },
   eventPlayer: {
     fontSize: 13,
     fontWeight: "800",
@@ -793,7 +860,7 @@ const styles = StyleSheet.create({
   eventDetail: {
     fontSize: 11,
     color: "rgba(255, 255, 255, 0.55)",
-    marginTop: 3,
+    marginTop: 2,
   },
   timelineSpine: {
     width: 50,
@@ -841,9 +908,6 @@ const styles = StyleSheet.create({
     height: 13,
     backgroundColor: THEME.colors.yellowCard,
     borderRadius: 2,
-  },
-  eventIcon: {
-    fontSize: 13,
   },
   spineMinuteText: {
     fontSize: 10,
@@ -896,10 +960,6 @@ const styles = StyleSheet.create({
   activeLineupToggleBtn: {
     backgroundColor: "rgba(255, 255, 255, 0.14)",
   },
-  toggleLogo: {
-    width: 20,
-    height: 20,
-  },
   lineupToggleText: {
     fontSize: 13,
     fontWeight: "700",
@@ -939,11 +999,11 @@ const styles = StyleSheet.create({
 
   // Pitch Graphic
   pitch: {
-    height: 440,
-    backgroundColor: "#163d20",
+    height: 460,
+    backgroundColor: "#13381c",
     borderRadius: 20,
     borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.4)",
+    borderColor: "rgba(255, 255, 255, 0.35)",
     position: "relative",
     overflow: "hidden",
   },
@@ -953,7 +1013,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 2,
-    backgroundColor: "rgba(255, 255, 255, 0.35)",
+    backgroundColor: "rgba(255, 255, 255, 0.3)",
   },
   pitchCenterCircle: {
     position: "absolute",
@@ -965,7 +1025,7 @@ const styles = StyleSheet.create({
     marginTop: -40,
     marginLeft: -40,
     borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.35)",
+    borderColor: "rgba(255, 255, 255, 0.3)",
   },
   pitchCenterDot: {
     position: "absolute",
@@ -987,7 +1047,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderLeftWidth: 2,
     borderRightWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.35)",
+    borderColor: "rgba(255, 255, 255, 0.3)",
   },
   pitchGoalTop: {
     position: "absolute",
@@ -998,7 +1058,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     borderLeftWidth: 2,
     borderRightWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.35)",
+    borderColor: "rgba(255, 255, 255, 0.3)",
   },
   pitchPenaltyBottom: {
     position: "absolute",
@@ -1009,7 +1069,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 2,
     borderLeftWidth: 2,
     borderRightWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.35)",
+    borderColor: "rgba(255, 255, 255, 0.3)",
   },
   pitchGoalBottom: {
     position: "absolute",
@@ -1020,42 +1080,47 @@ const styles = StyleSheet.create({
     borderTopWidth: 2,
     borderLeftWidth: 2,
     borderRightWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.35)",
+    borderColor: "rgba(255, 255, 255, 0.3)",
   },
   playerPin: {
     position: "absolute",
     transform: [{ translateX: -24 }, { translateY: -24 }],
     alignItems: "center",
-    width: 48,
+    width: 52,
   },
-  jerseyCircle: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "#d7fc5a",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
+  playerAvatarWrapper: {
+    position: "relative",
+  },
+  jerseyBadgeSmall: {
+    position: "absolute",
+    bottom: -3,
+    right: -3,
+    backgroundColor: THEME.colors.primary,
+    borderRadius: 7,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderWidth: 1,
     borderColor: "#080a0f",
   },
-  jerseyAway: {
+  jerseyBadgeAway: {
     backgroundColor: "#00b0ff",
   },
-  jerseyNumber: {
-    fontSize: 11,
+  jerseyBadgeText: {
+    fontSize: 9,
     fontWeight: "900",
     color: "#080a0f",
   },
   playerNamePill: {
-    backgroundColor: "rgba(0, 0, 0, 0.75)",
-    paddingHorizontal: 4,
-    paddingVertical: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.8)",
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
     borderRadius: 4,
     marginTop: 2,
+    maxWidth: 58,
   },
   playerPinName: {
     fontSize: 9,
-    fontWeight: "700",
+    fontWeight: "800",
     color: "#fff",
     textAlign: "center",
   },
@@ -1087,16 +1152,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "rgba(255, 255, 255, 0.06)",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
     borderRadius: 10,
-  },
-  subDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: THEME.colors.primary,
-    marginRight: 6,
   },
   subName: {
     fontSize: 12,
@@ -1118,12 +1176,7 @@ const styles = StyleSheet.create({
   legendTeam: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    maxWidth: 120,
-  },
-  legendLogo: {
-    width: 22,
-    height: 22,
+    maxWidth: 130,
   },
   legendTeamName: {
     fontSize: 13,
@@ -1241,12 +1294,7 @@ const styles = StyleSheet.create({
   formTeamLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
     flex: 1,
-  },
-  formLogo: {
-    width: 24,
-    height: 24,
   },
   formTeamName: {
     fontSize: 13,
@@ -1372,6 +1420,7 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "800",
     color: "#fff",
+    marginTop: 12,
     marginBottom: 16,
   },
   backButton: {
