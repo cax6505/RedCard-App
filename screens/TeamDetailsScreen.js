@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import {
   View,
   Text,
@@ -12,38 +12,89 @@ import {
   Platform,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRoute, useNavigation } from "@react-navigation/native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { THEME } from "../constants/theme";
+import { auth, db } from "../firebase";
+import { doc, getDoc, setDoc } from "firebase/firestore";
+import { getCache, setCache } from "../utils/cache";
 
 const API_KEY = "fdd10ed1203d4ce19d9db91b4ff0d8f1";
 
 export default function TeamDetailsScreen() {
   const { params } = useRoute();
   const navigation = useNavigation();
-  const { team } = params;
+  const team = params?.team || {};
 
   const [details, setDetails] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState("Squad"); // Squad, Overview, Fixtures
+  const [selectedPositionFilter, setSelectedPositionFilter] = useState("All"); // All, GK, DEF, MID, ATT
+  const [isFavorite, setIsFavorite] = useState(false);
 
+  // Player Details Modal
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedPlayer, setSelectedPlayer] = useState(null);
   const [modalLoading, setModalLoading] = useState(false);
 
   useEffect(() => {
-    fetchTeam();
+    if (team?.id) {
+      fetchTeam();
+      checkFavoriteStatus();
+    }
   }, [team?.id]);
+
+  const checkFavoriteStatus = async () => {
+    if (!auth.currentUser || !team?.id) return;
+    try {
+      const snap = await getDoc(doc(db, "users", auth.currentUser.uid));
+      const favs = snap.data()?.favouriteTeamIds || [];
+      setIsFavorite(favs.includes(team.id));
+    } catch (err) {
+      console.log("Error checking fav status:", err);
+    }
+  };
+
+  const toggleFavorite = async () => {
+    if (!auth.currentUser || !team?.id) return;
+    const nextState = !isFavorite;
+    setIsFavorite(nextState);
+    try {
+      const snap = await getDoc(doc(db, "users", auth.currentUser.uid));
+      let favs = snap.data()?.favouriteTeamIds || [];
+      if (nextState) {
+        if (!favs.includes(team.id)) favs.push(team.id);
+      } else {
+        favs = favs.filter((id) => id !== team.id);
+      }
+      await setDoc(doc(db, "users", auth.currentUser.uid), { favouriteTeamIds: favs }, { merge: true });
+    } catch (err) {
+      console.log("Error updating favorite:", err);
+      setIsFavorite(!nextState);
+    }
+  };
 
   const fetchTeam = async () => {
     setLoading(true);
     try {
-      const res = await fetch(
-        `https://api.football-data.org/v4/teams/${team.id}`,
-        {
-          headers: { "X-Auth-Token": API_KEY },
-        },
-      );
-      const data = await res.json();
-      setDetails(data);
+      const cacheKey = `team_details_${team.id}`;
+      const cached = await getCache(cacheKey);
+      if (cached) {
+        setDetails(cached);
+        setLoading(false);
+      }
+
+      const res = await fetch(`https://api.football-data.org/v4/teams/${team.id}`, {
+        headers: { "X-Auth-Token": API_KEY },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDetails(data);
+        await setCache(cacheKey, data);
+      }
+    } catch (err) {
+      console.log("Error fetching team:", err);
     } finally {
       setLoading(false);
     }
@@ -51,18 +102,12 @@ export default function TeamDetailsScreen() {
 
   const fetchPlayerPhoto = async (playerName) => {
     try {
-      const url = `https://www.thesportsdb.com/api/v1/json/3/searchplayers.php?p=${encodeURIComponent(
-        playerName,
-      )}`;
-
+      const url = `https://www.thesportsdb.com/api/v1/json/3/searchplayers.php?p=${encodeURIComponent(playerName)}`;
       const res = await fetch(url);
       if (!res.ok) return null;
       const data = await res.json();
-
       const player = data?.player?.[0];
-      return (
-        player?.strCutout || player?.strThumb || player?.strFanart1 || null
-      );
+      return player?.strCutout || player?.strThumb || player?.strFanart1 || null;
     } catch {
       return null;
     }
@@ -79,404 +124,829 @@ export default function TeamDetailsScreen() {
     }
   };
 
-  if (loading) {
+  // Group squad by positions
+  const categorizedSquad = useMemo(() => {
+    const squad = details?.squad || [];
+    const groups = {
+      goalkeepers: [],
+      defenders: [],
+      midfielders: [],
+      forwards: [],
+    };
+
+    squad.forEach((p) => {
+      const pos = (p.position || "").toLowerCase();
+      if (pos.includes("goalkeeper") || pos.includes("keeper")) {
+        groups.goalkeepers.push(p);
+      } else if (pos.includes("defence") || pos.includes("back") || pos.includes("defender")) {
+        groups.defenders.push(p);
+      } else if (pos.includes("midfield")) {
+        groups.midfielders.push(p);
+      } else {
+        groups.forwards.push(p);
+      }
+    });
+
+    return groups;
+  }, [details?.squad]);
+
+  // Filtered Squad
+  const filteredSquadList = useMemo(() => {
+    if (selectedPositionFilter === "GK") return categorizedSquad.goalkeepers;
+    if (selectedPositionFilter === "DEF") return categorizedSquad.defenders;
+    if (selectedPositionFilter === "MID") return categorizedSquad.midfielders;
+    if (selectedPositionFilter === "ATT") return categorizedSquad.forwards;
+    return details?.squad || [];
+  }, [selectedPositionFilter, categorizedSquad, details?.squad]);
+
+  // Mock club recent & upcoming fixtures
+  const clubFixtures = useMemo(() => {
+    const teamName = details?.shortName || team?.name || "Club";
+    return [
+      { opponent: "Real Madrid", isHome: true, date: "10 Feb", time: "20:00", comp: "Champions League", status: "Upcoming" },
+      { opponent: "Arsenal", isHome: false, date: "03 Feb", score: "2 - 1", comp: "Premier League", status: "Finished" },
+      { opponent: "Chelsea", isHome: true, date: "28 Jan", score: "3 - 1", comp: "Premier League", status: "Finished" },
+      { opponent: "Liverpool", isHome: false, date: "21 Jan", score: "1 - 1", comp: "Premier League", status: "Finished" },
+    ];
+  }, [details, team]);
+
+  if (loading && !details) {
     return (
-      <LinearGradient
-        colors={["#3b3d0e", "#0f0f0d"]}
-        style={styles.loaderContainer}
-      >
-        <ActivityIndicator size="large" color="#d7fc5a" />
+      <LinearGradient colors={THEME.colors.gradientBackground} style={styles.centerLoading}>
+        <ActivityIndicator size="large" color={THEME.colors.primary} />
+        <Text style={styles.loadingText}>Loading club profile...</Text>
       </LinearGradient>
     );
   }
 
+  const crestUri = details?.crest || team?.crest;
+
   return (
-    <LinearGradient
-      colors={["#3b3d0e", "#0f0f0d", "#1a1a0d"]}
-      style={{ flex: 1, paddingTop: Platform.OS === "ios" ? 60 : 50 }}
-    >
-      <View style={styles.headerContainer}>
-        <TouchableOpacity
-          style={styles.backBtn}
-          onPress={() => navigation.goBack()}
-          accessibilityLabel="Go back"
-        >
-          <Ionicons name="chevron-back" size={24} color="#fff" />
-        </TouchableOpacity>
-        <Text style={styles.titleText}>{details?.shortName || "Team"}</Text>
-        <View style={{ width: 40 }} />
-      </View>
-
-      <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
-        <View style={styles.teamBox}>
-          <Image
-            source={{ uri: details?.crest || undefined }}
-            style={styles.logo}
-            resizeMode="contain"
-          />
-          <Text style={styles.fullName}>{details?.name}</Text>
-        </View>
-
-        <View style={styles.infoCard}>
-          <Text style={styles.cardTitle}>Club Information</Text>
-
-          <View style={styles.infoRow}>
-            <Text style={styles.label}>Venue</Text>
-            <Text style={styles.value}>{details?.venue || "—"}</Text>
-          </View>
-
-          <View style={styles.infoRow}>
-            <Text style={styles.label}>Address</Text>
-            <Text style={styles.value}>{details?.address || "—"}</Text>
-          </View>
-
-          <View style={styles.infoRow}>
-            <Text style={styles.label}>Website</Text>
-            <Text
-              style={styles.link}
-              onPress={() => {
-                if (details?.website) Linking.openURL(details.website);
-              }}
-            >
-              {details?.website || "—"}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Squad</Text>
+    <LinearGradient colors={THEME.colors.gradientBackground} style={styles.screen}>
+      <SafeAreaView style={styles.safeArea}>
+        {/* Top Header Bar */}
+        <View style={styles.navBar}>
           <TouchableOpacity
-            style={styles.lineupButton}
-            onPress={() =>
-              navigation.navigate("LineupBuilder", { team: details })
-            }
+            style={styles.iconButton}
+            onPress={() => navigation.goBack()}
+            accessibilityLabel="Go back"
           >
-            <Ionicons name="football-outline" size={17} color="#0f0f0d" />
-            <Text style={styles.lineupButtonText}>Build lineup</Text>
+            <Ionicons name="chevron-back" size={24} color="#fff" />
+          </TouchableOpacity>
+
+          <Text style={styles.navTitle} numberOfLines={1}>
+            {details?.shortName || team?.name || "Team"}
+          </Text>
+
+          <TouchableOpacity style={styles.iconButton} onPress={toggleFavorite}>
+            <Ionicons
+              name={isFavorite ? "star" : "star-outline"}
+              size={22}
+              color={isFavorite ? THEME.colors.primary : "#fff"}
+            />
           </TouchableOpacity>
         </View>
-        <View style={styles.squadCard}>
-          {details?.squad?.length > 0 ? (
-            details.squad.map((p) => (
+
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Club Hero Arena Banner */}
+          <LinearGradient
+            colors={["#1c2838", "#121926", "#0c1017"]}
+            style={styles.heroCard}
+          >
+            <View style={styles.heroCrestBox}>
+              <Image source={{ uri: crestUri }} style={styles.heroCrest} resizeMode="contain" />
+            </View>
+
+            <Text style={styles.heroFullName}>{details?.name || team?.name}</Text>
+
+            {/* Badges Row */}
+            <View style={styles.heroBadgesRow}>
+              {details?.founded && (
+                <View style={styles.heroBadge}>
+                  <Text style={styles.heroBadgeText}>Est. {details.founded}</Text>
+                </View>
+              )}
+              {details?.venue && (
+                <View style={styles.heroBadge}>
+                  <Ionicons name="location-outline" size={12} color="rgba(255,255,255,0.7)" style={{ marginRight: 4 }} />
+                  <Text style={styles.heroBadgeText} numberOfLines={1}>{details.venue}</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Quick Actions */}
+            <View style={styles.heroActionsRow}>
               <TouchableOpacity
-                key={p.id ?? `${p.name}-${Math.random()}`}
-                style={styles.playerRow}
-                activeOpacity={0.75}
-                onPress={() => handleSelectPlayer(p)}
+                style={styles.heroPrimaryBtn}
+                onPress={() => navigation.navigate("LineupBuilder", { team: details || team })}
               >
-                <View>
-                  <Text style={styles.playerName}>{p.name}</Text>
-                  <Text style={styles.playerPos}>{p.position || "—"}</Text>
+                <Ionicons name="football" size={16} color="#080a0f" />
+                <Text style={styles.heroPrimaryBtnText}>Build Squad Lineup</Text>
+              </TouchableOpacity>
+
+              {details?.website && (
+                <TouchableOpacity
+                  style={styles.heroSecondaryBtn}
+                  onPress={() => Linking.openURL(details.website)}
+                >
+                  <Ionicons name="globe-outline" size={16} color="#fff" />
+                </TouchableOpacity>
+              )}
+            </View>
+          </LinearGradient>
+
+          {/* Sub-Tabs: Squad, Overview, Fixtures */}
+          <View style={styles.tabsRibbon}>
+            {["Squad", "Overview", "Fixtures"].map((tab) => {
+              const isActive = activeTab === tab;
+              return (
+                <TouchableOpacity
+                  key={tab}
+                  style={[styles.tabBtn, isActive && styles.activeTabBtn]}
+                  onPress={() => setActiveTab(tab)}
+                >
+                  <Text style={[styles.tabBtnText, isActive && styles.activeTabBtnText]}>
+                    {tab}
+                    {tab === "Squad" && details?.squad?.length ? ` (${details.squad.length})` : ""}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* TAB: Squad */}
+          {activeTab === "Squad" && (
+            <View style={styles.squadTabContainer}>
+              {/* Position Filter Pills */}
+              <View style={styles.posFilterRow}>
+                {["All", "GK", "DEF", "MID", "ATT"].map((pos) => {
+                  const isSel = selectedPositionFilter === pos;
+                  return (
+                    <TouchableOpacity
+                      key={pos}
+                      style={[styles.posFilterPill, isSel && styles.activePosFilterPill]}
+                      onPress={() => setSelectedPositionFilter(pos)}
+                    >
+                      <Text style={[styles.posFilterText, isSel && styles.activePosFilterText]}>
+                        {pos}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* Squad Players List */}
+              <View style={styles.squadListCard}>
+                {filteredSquadList.length > 0 ? (
+                  filteredSquadList.map((p, idx) => (
+                    <TouchableOpacity
+                      key={p.id || idx}
+                      style={styles.playerItemRow}
+                      activeOpacity={0.75}
+                      onPress={() => handleSelectPlayer(p)}
+                    >
+                      <View style={styles.playerNumCircle}>
+                        <Text style={styles.playerNumText}>{p.shirtNumber || idx + 1}</Text>
+                      </View>
+
+                      <View style={styles.playerInfoColumn}>
+                        <Text style={styles.playerRowName}>{p.name}</Text>
+                        <Text style={styles.playerRowPosition}>
+                          {p.position || "Player"} • {p.nationality || "International"}
+                        </Text>
+                      </View>
+
+                      <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.4)" />
+                    </TouchableOpacity>
+                  ))
+                ) : (
+                  <View style={styles.emptySquadBox}>
+                    <Text style={styles.emptySquadText}>Squad list currently unavailable</Text>
+                  </View>
+                )}
+              </View>
+            </View>
+          )}
+
+          {/* TAB: Overview */}
+          {activeTab === "Overview" && (
+            <View style={styles.overviewContainer}>
+              <View style={styles.infoCard}>
+                <Text style={styles.infoCardTitle}>Club Details</Text>
+
+                <View style={styles.infoRow}>
+                  <Text style={styles.infoLabel}>Official Name</Text>
+                  <Text style={styles.infoValue}>{details?.name || "—"}</Text>
                 </View>
 
-                <Ionicons name="chevron-forward" size={20} color="#fff" />
-              </TouchableOpacity>
-            ))
-          ) : (
-            <Text style={styles.noSquad}>Squad info not available</Text>
+                <View style={styles.infoRow}>
+                  <Text style={styles.infoLabel}>Home Stadium</Text>
+                  <Text style={styles.infoValue}>{details?.venue || "—"}</Text>
+                </View>
+
+                <View style={styles.infoRow}>
+                  <Text style={styles.infoLabel}>Club Colors</Text>
+                  <Text style={styles.infoValue}>{details?.clubColors || "—"}</Text>
+                </View>
+
+                <View style={styles.infoRow}>
+                  <Text style={styles.infoLabel}>Address</Text>
+                  <Text style={styles.infoValue}>{details?.address || "—"}</Text>
+                </View>
+
+                <View style={styles.infoRow}>
+                  <Text style={styles.infoLabel}>Official Website</Text>
+                  <Text
+                    style={styles.infoLink}
+                    onPress={() => details?.website && Linking.openURL(details.website)}
+                  >
+                    {details?.website || "—"}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Running Competitions */}
+              {details?.runningCompetitions?.length > 0 && (
+                <View style={styles.infoCard}>
+                  <Text style={styles.infoCardTitle}>Active Competitions</Text>
+                  <View style={styles.compList}>
+                    {details.runningCompetitions.map((comp) => (
+                      <View key={comp.id} style={styles.compPill}>
+                        {comp.emblem ? (
+                          <Image source={{ uri: comp.emblem }} style={styles.compEmblem} />
+                        ) : null}
+                        <Text style={styles.compName}>{comp.name}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+            </View>
           )}
-        </View>
-      </ScrollView>
 
-      <Modal
-        visible={modalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => {
-          setModalVisible(false);
-          setSelectedPlayer(null);
-        }}
-      >
-        <View style={styles.modalOverlay}>
-          <TouchableOpacity
-            style={styles.modalBackdropTouchable}
-            activeOpacity={1}
-            onPress={() => {
-              setModalVisible(false);
-              setSelectedPlayer(null);
-            }}
-          />
+          {/* TAB: Fixtures */}
+          {activeTab === "Fixtures" && (
+            <View style={styles.fixturesContainer}>
+              {clubFixtures.map((f, i) => (
+                <View key={i} style={styles.fixtureCard}>
+                  <View style={styles.fixtureHeader}>
+                    <Text style={styles.fixtureComp}>{f.comp}</Text>
+                    <Text style={styles.fixtureStatus}>{f.status}</Text>
+                  </View>
 
-          <View style={styles.modalSheet}>
-            <View style={styles.dragIndicator} />
+                  <View style={styles.fixtureTeamsRow}>
+                    <Text style={styles.fixtureTeamName}>
+                      {f.isHome ? details?.shortName || team.name : f.opponent}
+                    </Text>
+                    <View style={styles.fixtureCenterBox}>
+                      {f.score ? (
+                        <Text style={styles.fixtureScore}>{f.score}</Text>
+                      ) : (
+                        <Text style={styles.fixtureTime}>{f.time}</Text>
+                      )}
+                      <Text style={styles.fixtureDate}>{f.date}</Text>
+                    </View>
+                    <Text style={styles.fixtureTeamName}>
+                      {f.isHome ? f.opponent : details?.shortName || team.name}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+        </ScrollView>
 
+        {/* Player Profile Modal */}
+        <Modal
+          visible={modalVisible}
+          transparent
+          animationType="slide"
+          onRequestClose={() => {
+            setModalVisible(false);
+            setSelectedPlayer(null);
+          }}
+        >
+          <View style={styles.modalOverlay}>
             <TouchableOpacity
-              style={styles.modalClose}
+              style={styles.modalBackdrop}
+              activeOpacity={1}
               onPress={() => {
                 setModalVisible(false);
                 setSelectedPlayer(null);
               }}
-            >
-              <Ionicons name="close" size={22} color="#fff" />
-            </TouchableOpacity>
+            />
 
-            {modalLoading ? (
-              <View style={styles.modalLoading}>
-                <ActivityIndicator size="large" color="#d7fc5a" />
-                <Text style={{ color: "#fff", marginTop: 10 }}>
-                  Loading player...
-                </Text>
-              </View>
-            ) : selectedPlayer ? (
-              <View style={styles.modalContent}>
-                <Image
-                  source={{
-                    uri:
-                      selectedPlayer.photo ||
-                      "https://cdn.sofifa.net/players/notfound_0_120.png",
-                  }}
-                  style={styles.playerPhoto}
-                />
+            <View style={styles.modalSheet}>
+              <View style={styles.modalHandle} />
 
-                <Text style={styles.modalPlayerName}>
-                  {selectedPlayer.name}
-                </Text>
+              <TouchableOpacity
+                style={styles.modalCloseBtn}
+                onPress={() => {
+                  setModalVisible(false);
+                  setSelectedPlayer(null);
+                }}
+              >
+                <Ionicons name="close" size={22} color="#fff" />
+              </TouchableOpacity>
 
-                <View style={styles.modalInfoBox}>
-                  <View style={styles.modalInfoRow}>
-                    <Text style={styles.modalLabel}>Position</Text>
-                    <Text style={styles.modalValue}>
-                      {selectedPlayer.position || "—"}
-                    </Text>
+              {modalLoading ? (
+                <View style={styles.modalLoadingBox}>
+                  <ActivityIndicator size="large" color={THEME.colors.primary} />
+                  <Text style={styles.modalLoadingText}>Loading player profile...</Text>
+                </View>
+              ) : selectedPlayer ? (
+                <View style={styles.modalBody}>
+                  <View style={styles.playerAvatarContainer}>
+                    <Image
+                      source={{
+                        uri:
+                          selectedPlayer.photo ||
+                          "https://cdn.sofifa.net/players/notfound_0_120.png",
+                      }}
+                      style={styles.playerModalPhoto}
+                      resizeMode="cover"
+                    />
                   </View>
 
-                  <View style={styles.modalInfoRow}>
-                    <Text style={styles.modalLabel}>Role</Text>
-                    <Text style={styles.modalValue}>
-                      {selectedPlayer.role || "—"}
-                    </Text>
-                  </View>
+                  <Text style={styles.modalPlayerName}>{selectedPlayer.name}</Text>
+                  <Text style={styles.modalPlayerRole}>
+                    {selectedPlayer.position || "Squad Member"} • #{selectedPlayer.shirtNumber || "—"}
+                  </Text>
 
-                  <View style={styles.modalInfoRow}>
-                    <Text style={styles.modalLabel}>Nationality</Text>
-                    <Text style={styles.modalValue}>
-                      {selectedPlayer.nationality || "—"}
-                    </Text>
-                  </View>
+                  <View style={styles.modalStatsCard}>
+                    <View style={styles.modalStatItem}>
+                      <Text style={styles.modalStatLabel}>Nationality</Text>
+                      <Text style={styles.modalStatValue}>{selectedPlayer.nationality || "—"}</Text>
+                    </View>
 
-                  <View style={styles.modalInfoRow}>
-                    <Text style={styles.modalLabel}>Date of Birth</Text>
-                    <Text style={styles.modalValue}>
-                      {selectedPlayer.dateOfBirth || "—"}
-                    </Text>
+                    <View style={styles.modalStatItem}>
+                      <Text style={styles.modalStatLabel}>Date of Birth</Text>
+                      <Text style={styles.modalStatValue}>{selectedPlayer.dateOfBirth || "—"}</Text>
+                    </View>
+
+                    <View style={styles.modalStatItem}>
+                      <Text style={styles.modalStatLabel}>Club</Text>
+                      <Text style={styles.modalStatValue}>{details?.shortName || team.name}</Text>
+                    </View>
                   </View>
                 </View>
-              </View>
-            ) : (
-              <View style={styles.modalLoading}>
-                <Text style={{ color: "#fff" }}>No player selected</Text>
-              </View>
-            )}
+              ) : null}
+            </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      </SafeAreaView>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  loaderContainer: {
+  screen: { flex: 1 },
+  safeArea: { flex: 1 },
+  centerLoading: {
     flex: 1,
+    alignItems: "center",
     justifyContent: "center",
-    alignItems: "center",
   },
-  headerContainer: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingHorizontal: 18,
-    alignItems: "center",
-  },
-  backBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 25,
-    backgroundColor: "rgba(255,255,255,0.12)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  titleText: {
-    color: "#fff",
-    fontSize: 20,
-    fontWeight: "700",
-  },
-  teamBox: {
-    alignItems: "center",
-    marginTop: 20,
-  },
-  logo: {
-    width: 130,
-    height: 130,
-    borderRadius: 12,
-  },
-  fullName: {
-    color: "#fff",
-    fontSize: 22,
+  loadingText: {
+    color: "rgba(255, 255, 255, 0.6)",
+    fontSize: 14,
     marginTop: 12,
-    fontWeight: "700",
+    fontWeight: "600",
+  },
+  navBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  iconButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  navTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#fff",
+    maxWidth: 200,
+  },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 130,
+  },
+
+  // Hero Card
+  heroCard: {
+    borderRadius: 24,
+    padding: 22,
+    alignItems: "center",
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
+  },
+  heroCrestBox: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 10,
+  },
+  heroCrest: {
+    width: "100%",
+    height: "100%",
+  },
+  heroFullName: {
+    fontSize: 20,
+    fontWeight: "900",
+    color: "#ffffff",
+    marginTop: 12,
     textAlign: "center",
   },
-  infoCard: {
-    margin: 20,
-    padding: 18,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.08)",
+  heroBadgesRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
   },
-  cardTitle: {
-    color: "#d7fc5a",
-    fontSize: 18,
+  heroBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  heroBadgeText: {
+    fontSize: 12,
     fontWeight: "700",
+    color: "rgba(255, 255, 255, 0.75)",
+  },
+  heroActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 16,
+    width: "100%",
+  },
+  heroPrimaryBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: THEME.colors.primary,
+    paddingVertical: 12,
+    borderRadius: 14,
+  },
+  heroPrimaryBtnText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#080a0f",
+  },
+  heroSecondaryBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  // Tabs Ribbon
+  tabsRibbon: {
+    flexDirection: "row",
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderRadius: 16,
+    padding: 3,
+    marginTop: 16,
+    marginBottom: 12,
+  },
+  tabBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    alignItems: "center",
+    borderRadius: 13,
+  },
+  activeTabBtn: {
+    backgroundColor: "rgba(255, 255, 255, 0.15)",
+  },
+  tabBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "rgba(255, 255, 255, 0.6)",
+  },
+  activeTabBtnText: {
+    color: "#fff",
+    fontWeight: "900",
+  },
+
+  // Squad Tab
+  squadTabContainer: {},
+  posFilterRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+  posFilterPill: {
+    flex: 1,
+    paddingVertical: 7,
+    alignItems: "center",
+    borderRadius: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+  },
+  activePosFilterPill: {
+    backgroundColor: THEME.colors.primary,
+  },
+  posFilterText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "rgba(255, 255, 255, 0.7)",
+  },
+  activePosFilterText: {
+    color: "#080a0f",
+    fontWeight: "900",
+  },
+  squadListCard: {
+    backgroundColor: "rgba(22, 28, 40, 0.65)",
+    borderRadius: 20,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+  },
+  playerItemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.04)",
+  },
+  playerNumCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  playerNumText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: THEME.colors.primary,
+  },
+  playerInfoColumn: {
+    flex: 1,
+  },
+  playerRowName: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#fff",
+  },
+  playerRowPosition: {
+    fontSize: 12,
+    color: "rgba(255, 255, 255, 0.55)",
+    marginTop: 2,
+  },
+  emptySquadBox: {
+    paddingVertical: 30,
+    alignItems: "center",
+  },
+  emptySquadText: {
+    color: "rgba(255, 255, 255, 0.5)",
+    fontSize: 13,
+  },
+
+  // Overview Tab
+  overviewContainer: {
+    gap: 12,
+  },
+  infoCard: {
+    backgroundColor: "rgba(22, 28, 40, 0.65)",
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+  },
+  infoCardTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#fff",
     marginBottom: 14,
   },
   infoRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.04)",
+  },
+  infoLabel: {
+    fontSize: 13,
+    color: "rgba(255, 255, 255, 0.5)",
+    fontWeight: "600",
+  },
+  infoValue: {
+    fontSize: 13,
+    color: "#fff",
+    fontWeight: "700",
+    maxWidth: 200,
+    textAlign: "right",
+  },
+  infoLink: {
+    fontSize: 13,
+    color: THEME.colors.primary,
+    fontWeight: "700",
+  },
+  compList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  compPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  compEmblem: {
+    width: 18,
+    height: 18,
+    marginRight: 8,
+  },
+  compName: {
+    fontSize: 12,
+    color: "#fff",
+    fontWeight: "700",
+  },
+
+  // Fixtures Tab
+  fixturesContainer: {
+    gap: 10,
+  },
+  fixtureCard: {
+    backgroundColor: "rgba(22, 28, 40, 0.65)",
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+  },
+  fixtureHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     marginBottom: 12,
   },
-  label: {
-    color: "#d7fc5a",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  value: {
-    color: "#fff",
-    fontSize: 15,
-    marginTop: 2,
-  },
-  link: {
-    color: "#8CE0FF",
-    fontSize: 15,
-    marginTop: 2,
-  },
-  sectionTitle: {
-    color: "#d7fc5a",
-    fontSize: 20,
+  fixtureComp: {
+    fontSize: 11,
     fontWeight: "700",
-    marginLeft: 20,
-    marginTop: 10,
+    color: "rgba(255, 255, 255, 0.5)",
   },
-  sectionHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginHorizontal: 20,
-    marginTop: 10,
-  },
-  lineupButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#d7fc5a",
-    borderRadius: 10,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-  },
-  lineupButtonText: {
-    color: "#0f0f0d",
-    fontSize: 12,
+  fixtureStatus: {
+    fontSize: 11,
     fontWeight: "800",
-    marginLeft: 5,
+    color: THEME.colors.primary,
   },
-  squadCard: {
-    margin: 20,
-    borderRadius: 18,
-    paddingVertical: 6,
-    backgroundColor: "rgba(255,255,255,0.05)",
-  },
-  playerRow: {
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.08)",
+  fixtureTeamsRow: {
     flexDirection: "row",
-    alignItems: "center",
     justifyContent: "space-between",
+    alignItems: "center",
   },
-  playerName: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  playerPos: {
-    color: "#bbb",
-    fontSize: 13,
-    marginTop: 3,
-  },
-  noSquad: {
-    color: "#ccc",
-    padding: 20,
+  fixtureTeamName: {
     fontSize: 14,
+    fontWeight: "800",
+    color: "#fff",
+    flex: 1,
   },
+  fixtureCenterBox: {
+    alignItems: "center",
+    minWidth: 80,
+  },
+  fixtureScore: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#fff",
+  },
+  fixtureTime: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: THEME.colors.primary,
+  },
+  fixtureDate: {
+    fontSize: 11,
+    color: "rgba(255, 255, 255, 0.5)",
+    marginTop: 2,
+  },
+
+  // Player Modal
   modalOverlay: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(0,0,0,0.6)",
+    backgroundColor: "rgba(0,0,0,0.7)",
   },
-  modalBackdropTouchable: {
-    flex: 1,
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
   },
   modalSheet: {
-    backgroundColor: "#111",
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    paddingTop: 10,
-    paddingBottom: 34,
-    minHeight: 260,
-    maxHeight: "75%",
+    backgroundColor: "#121722",
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    padding: 24,
+    paddingBottom: 40,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.12)",
   },
-  dragIndicator: {
-    width: 60,
-    height: 6,
-    borderRadius: 6,
-    backgroundColor: "rgba(255,255,255,0.18)",
+  modalHandle: {
+    width: 44,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "rgba(255, 255, 255, 0.25)",
     alignSelf: "center",
-    marginBottom: 8,
+    marginBottom: 16,
   },
-  modalClose: {
+  modalCloseBtn: {
     position: "absolute",
-    right: 14,
-    top: 12,
-    zIndex: 10,
-    padding: 6,
-  },
-  modalLoading: {
+    top: 20,
+    right: 20,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 30,
   },
-  modalContent: {
+  modalLoadingBox: {
+    paddingVertical: 50,
     alignItems: "center",
-    paddingHorizontal: 22,
-    marginTop: 6,
   },
-  playerPhoto: {
-    width: 110,
-    height: 110,
-    borderRadius: 60,
-    marginBottom: 12,
-    backgroundColor: "rgba(255,255,255,0.03)",
+  modalLoadingText: {
+    color: "#fff",
+    marginTop: 12,
+    fontSize: 14,
+  },
+  modalBody: {
+    alignItems: "center",
+  },
+  playerAvatarContainer: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    borderWidth: 3,
+    borderColor: THEME.colors.primary,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  playerModalPhoto: {
+    width: "100%",
+    height: "100%",
   },
   modalPlayerName: {
-    color: "#fff",
     fontSize: 20,
-    fontWeight: "700",
-    marginBottom: 8,
+    fontWeight: "900",
+    color: "#fff",
     textAlign: "center",
   },
-  modalInfoBox: {
-    width: "100%",
-    marginTop: 6,
+  modalPlayerRole: {
+    fontSize: 13,
+    color: THEME.colors.primary,
+    fontWeight: "700",
+    marginTop: 4,
   },
-  modalInfoRow: {
+  modalStatsCard: {
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderRadius: 16,
+    padding: 16,
+    width: "100%",
+    marginTop: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+  },
+  modalStatItem: {
     flexDirection: "row",
     justifyContent: "space-between",
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.05)",
+    borderBottomColor: "rgba(255, 255, 255, 0.05)",
   },
-  modalLabel: {
-    color: "#d7fc5a",
+  modalStatLabel: {
     fontSize: 13,
+    color: "rgba(255, 255, 255, 0.55)",
     fontWeight: "600",
   },
-  modalValue: {
-    color: "#fff",
+  modalStatValue: {
     fontSize: 13,
+    color: "#fff",
+    fontWeight: "800",
   },
 });

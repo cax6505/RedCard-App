@@ -8,43 +8,37 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Share,
+  Platform,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { THEME } from "../constants/theme";
+import { FORMATIONS } from "../utils/footballData";
 
 const API_KEY = "fdd10ed1203d4ce19d9db91b4ff0d8f1";
 const FALLBACK_PHOTO = "https://cdn.sofifa.net/players/notfound_0_120.png";
 
-const FORMATION_SLOTS = [
-  { id: "goalkeeper", role: "GK", top: "86%", left: "50%" },
-  { id: "left-back", role: "LB", top: "68%", left: "15%" },
-  { id: "centre-back-left", role: "CB", top: "70%", left: "38%" },
-  { id: "centre-back-right", role: "CB", top: "70%", left: "62%" },
-  { id: "right-back", role: "RB", top: "68%", left: "85%" },
-  { id: "left-midfielder", role: "CM", top: "48%", left: "22%" },
-  { id: "centre-midfielder", role: "CM", top: "43%", left: "50%" },
-  { id: "right-midfielder", role: "CM", top: "48%", left: "78%" },
-  { id: "left-winger", role: "LW", top: "22%", left: "18%" },
-  { id: "striker", role: "ST", top: "14%", left: "50%" },
-  { id: "right-winger", role: "RW", top: "22%", left: "82%" },
-];
-
 const normalisePosition = (position = "") => position.toLowerCase();
 
 const isCompatible = (player, role) => {
+  if (!role) return true;
   const position = normalisePosition(player.position);
-  if (role === "GK") return position.includes("goalkeeper");
-  if (role === "CB" || role === "LB" || role === "RB") {
+  if (role === "GK") return position.includes("goalkeeper") || position.includes("keeper");
+  if (role === "CB" || role === "LB" || role === "RB" || role === "LWB" || role === "RWB") {
     return position.includes("defen") || position.includes("back");
   }
-  if (role === "CM") return position.includes("midfield");
+  if (role.includes("M") || role === "CAM" || role === "CDM" || role === "CM") {
+    return position.includes("midfield");
+  }
   return (
     position.includes("attack") ||
     position.includes("forward") ||
-    position.includes("wing")
+    position.includes("wing") ||
+    position.includes("striker")
   );
 };
 
@@ -52,38 +46,47 @@ export default function LineupBuilderScreen() {
   const navigation = useNavigation();
   const { params } = useRoute();
   const team = params?.team;
+
+  const [formationKey, setFormationKey] = useState("4-3-3");
   const [squad, setSquad] = useState(team?.squad || []);
   const [photos, setPhotos] = useState({});
   const [lineup, setLineup] = useState({});
+  const [captainId, setCaptainId] = useState(null);
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [loading, setLoading] = useState(!team?.squad?.length);
-  const [photoLoading, setPhotoLoading] = useState(true);
+  const [searchFilter, setSearchFilter] = useState("");
+
+  const currentFormation = FORMATIONS[formationKey] || FORMATIONS["4-3-3"];
+  const currentSlots = currentFormation.slots;
 
   useEffect(() => {
     loadTeamAndLineup();
   }, [team?.id]);
 
-  useEffect(() => {
-    if (squad.length) loadPhotos(squad);
-  }, [squad.length]);
-
   const loadTeamAndLineup = async () => {
     try {
       let nextSquad = team?.squad || [];
       if (!nextSquad.length) {
-        const response = await fetch(
-          `https://api.football-data.org/v4/teams/${team.id}`,
-          {
-            headers: { "X-Auth-Token": API_KEY },
-          },
-        );
-        if (!response.ok) throw new Error("Unable to load squad");
-        const data = await response.json();
-        nextSquad = data.squad || [];
-        setSquad(nextSquad);
+        const response = await fetch(`https://api.football-data.org/v4/teams/${team.id}`, {
+          headers: { "X-Auth-Token": API_KEY },
+        });
+        if (response.ok) {
+          const data = await response.json();
+          nextSquad = data.squad || [];
+          setSquad(nextSquad);
+        }
       }
-      const saved = await AsyncStorage.getItem(`lineup_${team.id}`);
-      if (saved) setLineup(JSON.parse(saved));
+
+      const savedFormation = await AsyncStorage.getItem(`lineup_formation_${team?.id}`);
+      if (savedFormation && FORMATIONS[savedFormation]) {
+        setFormationKey(savedFormation);
+      }
+
+      const savedLineup = await AsyncStorage.getItem(`lineup_${team?.id}`);
+      if (savedLineup) setLineup(JSON.parse(savedLineup));
+
+      const savedCaptain = await AsyncStorage.getItem(`lineup_captain_${team?.id}`);
+      if (savedCaptain) setCaptainId(savedCaptain);
     } catch (error) {
       console.log("Lineup load error:", error);
     } finally {
@@ -91,282 +94,268 @@ export default function LineupBuilderScreen() {
     }
   };
 
-  const loadPhotos = async (players) => {
-    setPhotoLoading(true);
-    const cacheKey = `player_photos_${team.id}`;
-    try {
-      const cached = await AsyncStorage.getItem(cacheKey);
-      const cachedPhotos = cached ? JSON.parse(cached) : {};
-      const missingPlayers = players.filter(
-        (player) => !cachedPhotos[player.id],
-      );
-      const resolved = await Promise.all(
-        missingPlayers.map(async (player) => {
-          try {
-            const response = await fetch(
-              `https://www.thesportsdb.com/api/v1/json/3/searchplayers.php?p=${encodeURIComponent(player.name)}`,
-            );
-            const data = await response.json();
-            const result = data?.player?.[0];
-            return [player.id, result?.strCutout || result?.strThumb || null];
-          } catch {
-            return [player.id, null];
-          }
-        }),
-      );
-      const nextPhotos = { ...cachedPhotos, ...Object.fromEntries(resolved) };
-      setPhotos(nextPhotos);
-      await AsyncStorage.setItem(cacheKey, JSON.stringify(nextPhotos));
-    } catch (error) {
-      console.log("Player photo error:", error);
-    } finally {
-      setPhotoLoading(false);
+  const saveLineup = async (nextLineup, nextFormation = formationKey, nextCaptain = captainId) => {
+    setLineup(nextLineup);
+    if (team?.id) {
+      await AsyncStorage.setItem(`lineup_${team.id}`, JSON.stringify(nextLineup));
+      await AsyncStorage.setItem(`lineup_formation_${team.id}`, nextFormation);
+      if (nextCaptain) await AsyncStorage.setItem(`lineup_captain_${team.id}`, nextCaptain);
     }
   };
 
-  const assignedIds = useMemo(() => new Set(Object.values(lineup)), [lineup]);
-  const selectedPlayer = squad.find(
-    (player) => player.id === lineup[selectedSlot],
-  );
-  const availablePlayers = squad
-    .filter(
-      (player) =>
-        !assignedIds.has(player.id) || player.id === selectedPlayer?.id,
-    )
-    .sort((first, second) => {
-      const firstMatch =
-        selectedSlot &&
-        isCompatible(
-          first,
-          FORMATION_SLOTS.find((slot) => slot.id === selectedSlot)?.role,
-        );
-      const secondMatch =
-        selectedSlot &&
-        isCompatible(
-          second,
-          FORMATION_SLOTS.find((slot) => slot.id === selectedSlot)?.role,
-        );
-      return Number(secondMatch) - Number(firstMatch);
-    });
-
-  const saveLineup = async (nextLineup) => {
-    setLineup(nextLineup);
-    await AsyncStorage.setItem(`lineup_${team.id}`, JSON.stringify(nextLineup));
+  const handleSelectFormation = (key) => {
+    setFormationKey(key);
+    saveLineup(lineup, key);
   };
 
-  const selectPlayer = async (player) => {
-    const nextLineup = { ...lineup, [selectedSlot]: player.id };
-    await saveLineup(nextLineup);
+  const selectPlayer = (player) => {
+    const next = { ...lineup, [selectedSlot]: player.id };
+    saveLineup(next);
     setSelectedSlot(null);
   };
 
-  const clearSlot = async () => {
-    const nextLineup = { ...lineup };
-    delete nextLineup[selectedSlot];
-    await saveLineup(nextLineup);
+  const clearSlot = () => {
+    const next = { ...lineup };
+    delete next[selectedSlot];
+    saveLineup(next);
     setSelectedSlot(null);
   };
 
-  const resetLineup = async () => {
-    await saveLineup({});
+  const resetLineup = () => {
+    saveLineup({});
+    setCaptainId(null);
   };
+
+  const handleShareLineup = async () => {
+    try {
+      const selectedNames = Object.entries(lineup)
+        .map(([slotId, playerId]) => {
+          const p = squad.find((s) => s.id === playerId);
+          const slot = currentSlots.find((s) => s.id === slotId);
+          return `${slot?.label || "P"}: ${p?.name || "Vacant"}`;
+        })
+        .join("\n");
+
+      await Share.share({
+        message: `My ${formationKey} Starting XI for ${team?.shortName || team?.name} on RedCard:\n\n${selectedNames}`,
+      });
+    } catch (err) {
+      console.log(err);
+    }
+  };
+
+  const assignedPlayerIds = useMemo(() => new Set(Object.values(lineup)), [lineup]);
+  const activeSlotObj = currentSlots.find((s) => s.id === selectedSlot);
+
+  const availablePlayers = useMemo(() => {
+    return squad
+      .filter((p) => !assignedPlayerIds.has(p.id) || p.id === lineup[selectedSlot])
+      .sort((a, b) => {
+        const aCompat = isCompatible(a, activeSlotObj?.role);
+        const bCompat = isCompatible(b, activeSlotObj?.role);
+        return Number(bCompat) - Number(aCompat);
+      });
+  }, [squad, assignedPlayerIds, lineup, selectedSlot, activeSlotObj]);
+
+  const filledCount = Object.keys(lineup).length;
 
   if (loading) {
     return (
-      <LinearGradient colors={["#3b3d0e", "#0f0f0d"]} style={styles.loader}>
-        <ActivityIndicator size="large" color="#d7fc5a" />
+      <LinearGradient colors={THEME.colors.gradientBackground} style={styles.centerLoading}>
+        <ActivityIndicator size="large" color={THEME.colors.primary} />
+        <Text style={styles.loadingText}>Setting up tactical board...</Text>
       </LinearGradient>
     );
   }
 
   return (
-    <LinearGradient
-      colors={["#3b3d0e", "#0f0f0d", "#1a1a0d"]}
-      style={styles.screen}
-    >
+    <LinearGradient colors={THEME.colors.gradientBackground} style={styles.screen}>
       <SafeAreaView style={styles.safeArea}>
-        <View style={styles.header}>
+        {/* Top Navbar */}
+        <View style={styles.topBar}>
           <TouchableOpacity
-            style={styles.iconButton}
+            style={styles.circleBtn}
             onPress={() => navigation.goBack()}
             accessibilityLabel="Go back"
           >
             <Ionicons name="chevron-back" size={24} color="#fff" />
           </TouchableOpacity>
-          <View>
-            <Text style={styles.headerTitle}>Lineup Builder</Text>
-            <Text style={styles.headerSubtitle}>
-              {team?.shortName || team?.name}
-            </Text>
+
+          <View style={styles.titleBox}>
+            <Text style={styles.headerTitle}>Tactical Board</Text>
+            <Text style={styles.headerSub}>{team?.shortName || team?.name}</Text>
           </View>
-          <TouchableOpacity style={styles.resetButton} onPress={resetLineup}>
-            <Ionicons name="refresh-outline" size={19} color="#d7fc5a" />
-          </TouchableOpacity>
+
+          <View style={styles.topRightActions}>
+            <TouchableOpacity style={styles.circleBtn} onPress={handleShareLineup}>
+              <Ionicons name="share-outline" size={20} color="#fff" />
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.circleBtn} onPress={resetLineup}>
+              <Ionicons name="refresh-outline" size={20} color={THEME.colors.primary} />
+            </TouchableOpacity>
+          </View>
         </View>
 
-        <ScrollView contentContainerStyle={styles.content}>
-          <View style={styles.builderHeader}>
-            <View>
-              <Text style={styles.eyebrow}>YOUR XI</Text>
-              <Text style={styles.builderTitle}>4-3-3 formation</Text>
-            </View>
-            <Text style={styles.progress}>{Object.keys(lineup).length}/11</Text>
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Formation Selector Pills */}
+          <View style={styles.formationPickerContainer}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.formationScroll}>
+              {Object.keys(FORMATIONS).map((key) => {
+                const isSelected = formationKey === key;
+                return (
+                  <TouchableOpacity
+                    key={key}
+                    style={[styles.formationPill, isSelected && styles.activeFormationPill]}
+                    onPress={() => handleSelectFormation(key)}
+                  >
+                    <Text style={[styles.formationPillText, isSelected && styles.activeFormationPillText]}>
+                      {key}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
           </View>
 
-          {!squad.length && (
-            <View style={styles.emptySquad}>
-              <Ionicons name="alert-circle-outline" size={24} color="#d7fc5a" />
-              <Text style={styles.emptySquadTitle}>Squad data unavailable</Text>
-              <Text style={styles.emptySquadText}>
-                Refresh the team page and try again when the provider is
-                reachable.
-              </Text>
+          {/* Lineup Status Card */}
+          <View style={styles.statusBanner}>
+            <View>
+              <Text style={styles.formationCurrentName}>{currentFormation.name}</Text>
+              <Text style={styles.formationSubtitle}>Tap any position token to select player</Text>
             </View>
-          )}
+            <View style={styles.progressBox}>
+              <Text style={styles.progressCount}>{filledCount}/11</Text>
+              <Text style={styles.progressLabel}>SELECTED</Text>
+            </View>
+          </View>
 
+          {/* Realistic Tactical Football Pitch */}
           <View style={styles.pitch}>
-            <View style={styles.halfwayLine} />
-            <View style={styles.centerCircle} />
-            <View style={styles.goalTop} />
-            <View style={styles.goalBottom} />
-            {FORMATION_SLOTS.map((slot) => {
-              const player = squad.find(
-                (candidate) => candidate.id === lineup[slot.id],
-              );
-              const photo = player ? photos[player.id] || FALLBACK_PHOTO : null;
+            {/* Pitch Grass Stripes */}
+            <View style={styles.grassStripe1} />
+            <View style={styles.grassStripe2} />
+            <View style={styles.grassStripe3} />
+
+            {/* Pitch Markings */}
+            <View style={styles.pitchHalfway} />
+            <View style={styles.pitchCenterCircle} />
+            <View style={styles.pitchCenterSpot} />
+            <View style={styles.pitchPenaltyTop} />
+            <View style={styles.pitchGoalTop} />
+            <View style={styles.pitchPenaltyBottom} />
+            <View style={styles.pitchGoalBottom} />
+
+            {/* Formation Player Tokens */}
+            {currentSlots.map((slot) => {
+              const assignedPlayerId = lineup[slot.id];
+              const player = squad.find((p) => p.id === assignedPlayerId);
+              const isCaptain = player && captainId === player.id;
+
               return (
                 <TouchableOpacity
                   key={slot.id}
-                  style={[styles.slot, { top: slot.top, left: slot.left }]}
+                  style={[styles.slotToken, { top: slot.top, left: slot.left }]}
+                  activeOpacity={0.8}
                   onPress={() => setSelectedSlot(slot.id)}
-                  accessibilityLabel={
-                    player ? `Change ${player.name}` : `Choose ${slot.role}`
-                  }
                 >
-                  <View
-                    style={[
-                      styles.playerToken,
-                      player && styles.playerTokenFilled,
-                    ]}
-                  >
+                  <View style={[styles.playerBadge, player && styles.playerBadgeFilled]}>
                     {player ? (
-                      <Image
-                        source={{ uri: photo }}
-                        style={styles.tokenPhoto}
-                      />
+                      <Text style={styles.playerNumInitial}>
+                        {player.shirtNumber || slot.label}
+                      </Text>
                     ) : (
-                      <Ionicons name="add" size={20} color="#0f0f0d" />
+                      <Ionicons name="add" size={16} color="#080a0f" />
+                    )}
+
+                    {isCaptain && (
+                      <View style={styles.captainBadge}>
+                        <Text style={styles.captainText}>C</Text>
+                      </View>
                     )}
                   </View>
-                  <Text style={styles.slotLabel} numberOfLines={1}>
-                    {player?.name || slot.role}
-                  </Text>
+
+                  <View style={styles.slotNamePill}>
+                    <Text style={styles.slotPlayerName} numberOfLines={1}>
+                      {player ? player.name.split(" ").pop() : slot.label}
+                    </Text>
+                  </View>
                 </TouchableOpacity>
               );
             })}
           </View>
-
-          <View style={styles.tipRow}>
-            <Ionicons name="hand-left-outline" size={18} color="#d7fc5a" />
-            <Text style={styles.tipText}>
-              Tap a position to choose a player. Your lineup saves
-              automatically.
-            </Text>
-          </View>
-
-          <Text style={styles.sectionTitle}>Squad available</Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.benchRow}
-          >
-            {squad
-              .filter((player) => !assignedIds.has(player.id))
-              .map((player) => (
-                <TouchableOpacity
-                  key={player.id}
-                  style={styles.benchPlayer}
-                  onPress={() => setSelectedSlot("striker")}
-                >
-                  <Image
-                    source={{ uri: photos[player.id] || FALLBACK_PHOTO }}
-                    style={styles.benchPhoto}
-                  />
-                  <Text style={styles.benchName} numberOfLines={1}>
-                    {player.name}
-                  </Text>
-                  <Text style={styles.benchPosition}>
-                    {player.position || "Squad"}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-          </ScrollView>
-          {photoLoading && (
-            <Text style={styles.photoStatus}>Loading player portraits...</Text>
-          )}
         </ScrollView>
-      </SafeAreaView>
 
-      <Modal
-        visible={Boolean(selectedSlot)}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setSelectedSlot(null)}
-      >
-        <View style={styles.modalOverlay}>
-          <TouchableOpacity
-            style={styles.modalBackdrop}
-            onPress={() => setSelectedSlot(null)}
-          />
-          <View style={styles.playerPicker}>
-            <View style={styles.modalHandle} />
-            <View style={styles.pickerHeader}>
-              <View>
-                <Text style={styles.pickerTitle}>
-                  Choose{" "}
-                  {
-                    FORMATION_SLOTS.find((slot) => slot.id === selectedSlot)
-                      ?.role
-                  }
-                </Text>
-                <Text style={styles.pickerSubtitle}>
-                  Available squad members
-                </Text>
+        {/* Player Picker Modal Sheet */}
+        <Modal
+          visible={Boolean(selectedSlot)}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setSelectedSlot(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <TouchableOpacity
+              style={styles.modalBackdrop}
+              activeOpacity={1}
+              onPress={() => setSelectedSlot(null)}
+            />
+
+            <View style={styles.modalSheet}>
+              <View style={styles.modalHandle} />
+
+              <View style={styles.modalHeaderRow}>
+                <View>
+                  <Text style={styles.modalSheetTitle}>Choose {activeSlotObj?.label}</Text>
+                  <Text style={styles.modalSheetSub}>
+                    Recommended for {activeSlotObj?.role} role
+                  </Text>
+                </View>
+
+                {lineup[selectedSlot] && (
+                  <TouchableOpacity style={styles.clearSlotBtn} onPress={clearSlot}>
+                    <Ionicons name="trash-outline" size={16} color="#ff2a44" style={{ marginRight: 4 }} />
+                    <Text style={styles.clearSlotText}>Remove</Text>
+                  </TouchableOpacity>
+                )}
               </View>
-              {lineup[selectedSlot] && (
-                <TouchableOpacity onPress={clearSlot}>
-                  <Text style={styles.clearText}>Clear</Text>
-                </TouchableOpacity>
-              )}
+
+              <ScrollView style={styles.playerPickerList} showsVerticalScrollIndicator={false}>
+                {availablePlayers.map((p) => {
+                  const compat = isCompatible(p, activeSlotObj?.role);
+                  const isAssigned = lineup[selectedSlot] === p.id;
+
+                  return (
+                    <TouchableOpacity
+                      key={p.id}
+                      style={[styles.pickerItem, isAssigned && styles.pickerItemActive]}
+                      onPress={() => selectPlayer(p)}
+                    >
+                      <View style={styles.pickerNumberCircle}>
+                        <Text style={styles.pickerNumberText}>{p.shirtNumber || "—"}</Text>
+                      </View>
+
+                      <View style={styles.pickerInfoCol}>
+                        <Text style={styles.pickerName}>{p.name}</Text>
+                        <Text style={styles.pickerPos}>{p.position || "Squad"}</Text>
+                      </View>
+
+                      {compat ? (
+                        <View style={styles.compatChip}>
+                          <Text style={styles.compatText}>Ideal</Text>
+                        </View>
+                      ) : (
+                        <View style={styles.altChip}>
+                          <Text style={styles.altText}>Alt</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
             </View>
-            <ScrollView contentContainerStyle={styles.pickerList}>
-              {availablePlayers.map((player) => (
-                <TouchableOpacity
-                  key={player.id}
-                  style={styles.pickerPlayer}
-                  onPress={() => selectPlayer(player)}
-                >
-                  <Image
-                    source={{ uri: photos[player.id] || FALLBACK_PHOTO }}
-                    style={styles.pickerPhoto}
-                  />
-                  <View style={styles.pickerPlayerInfo}>
-                    <Text style={styles.pickerPlayerName}>{player.name}</Text>
-                    <Text style={styles.pickerPlayerPosition}>
-                      {player.position || "Position unavailable"}
-                    </Text>
-                  </View>
-                  <Ionicons
-                    name="add-circle-outline"
-                    size={22}
-                    color="#d7fc5a"
-                  />
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      </SafeAreaView>
     </LinearGradient>
   );
 }
@@ -374,249 +363,411 @@ export default function LineupBuilderScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   safeArea: { flex: 1 },
-  loader: { flex: 1, alignItems: "center", justifyContent: "center" },
-  header: {
+  centerLoading: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loadingText: {
+    color: "rgba(255, 255, 255, 0.6)",
+    fontSize: 14,
+    marginTop: 12,
+    fontWeight: "600",
+  },
+  topBar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
-  iconButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+  circleBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.12)",
   },
-  resetButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+  titleBox: {
     alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(215,252,90,0.12)",
   },
-  headerTitle: { color: "#fff", fontSize: 20, fontWeight: "800" },
-  headerSubtitle: {
-    color: "rgba(255,255,255,0.6)",
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#fff",
+  },
+  headerSub: {
     fontSize: 12,
+    color: "rgba(255, 255, 255, 0.55)",
+    marginTop: 1,
+  },
+  topRightActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 130,
+  },
+
+  // Formation Picker
+  formationPickerContainer: {
+    marginTop: 6,
+    marginBottom: 10,
+  },
+  formationScroll: {
+    gap: 8,
+  },
+  formationPill: {
+    paddingVertical: 7,
+    paddingHorizontal: 16,
+    borderRadius: 18,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+  },
+  activeFormationPill: {
+    backgroundColor: THEME.colors.primary,
+  },
+  formationPillText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "rgba(255, 255, 255, 0.7)",
+  },
+  activeFormationPillText: {
+    color: "#080a0f",
+    fontWeight: "900",
+  },
+
+  // Status Banner
+  statusBanner: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "rgba(22, 28, 40, 0.65)",
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+  },
+  formationCurrentName: {
+    fontSize: 15,
+    fontWeight: "900",
+    color: "#fff",
+  },
+  formationSubtitle: {
+    fontSize: 11,
+    color: "rgba(255, 255, 255, 0.5)",
     marginTop: 2,
   },
-  content: { padding: 20, paddingBottom: 130 },
-  builderHeader: {
-    flexDirection: "row",
+  progressBox: {
     alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 20,
-    marginBottom: 14,
+    backgroundColor: "rgba(215, 252, 90, 0.15)",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
   },
-  eyebrow: {
-    color: "#d7fc5a",
-    fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 1.2,
-  },
-  builderTitle: {
-    color: "#fff",
-    fontSize: 23,
-    fontWeight: "900",
-    marginTop: 3,
-  },
-  progress: { color: "#d7fc5a", fontSize: 20, fontWeight: "900" },
-  emptySquad: {
-    alignItems: "center",
-    padding: 18,
-    borderRadius: 16,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    marginBottom: 14,
-  },
-  emptySquadTitle: {
-    color: "#fff",
+  progressCount: {
     fontSize: 15,
+    fontWeight: "900",
+    color: THEME.colors.primary,
+  },
+  progressLabel: {
+    fontSize: 9,
     fontWeight: "800",
-    marginTop: 7,
+    color: THEME.colors.primary,
   },
-  emptySquadText: {
-    color: "rgba(255,255,255,0.62)",
-    fontSize: 12,
-    lineHeight: 17,
-    textAlign: "center",
-    marginTop: 4,
-  },
+
+  // Tactical Pitch Graphic
   pitch: {
-    height: 475,
-    borderRadius: 22,
-    overflow: "hidden",
-    position: "relative",
-    backgroundColor: "#397c45",
+    height: 480,
+    backgroundColor: "#164023",
+    borderRadius: 24,
     borderWidth: 2,
-    borderColor: "rgba(255,255,255,0.48)",
+    borderColor: "rgba(255, 255, 255, 0.45)",
+    position: "relative",
+    overflow: "hidden",
   },
-  halfwayLine: {
+  grassStripe1: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: "25%",
+    backgroundColor: "rgba(255, 255, 255, 0.02)",
+  },
+  grassStripe2: {
     position: "absolute",
     top: "50%",
     left: 0,
     right: 0,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.55)",
+    height: "25%",
+    backgroundColor: "rgba(255, 255, 255, 0.02)",
   },
-  centerCircle: {
+  grassStripe3: {
+    position: "absolute",
+    top: "75%",
+    left: 0,
+    right: 0,
+    height: "25%",
+    backgroundColor: "rgba(0, 0, 0, 0.04)",
+  },
+  pitchHalfway: {
+    position: "absolute",
+    top: "50%",
+    left: 0,
+    right: 0,
+    height: 2,
+    backgroundColor: "rgba(255, 255, 255, 0.4)",
+  },
+  pitchCenterCircle: {
     position: "absolute",
     top: "50%",
     left: "50%",
-    width: 78,
-    height: 78,
-    marginLeft: -39,
-    marginTop: -39,
-    borderRadius: 39,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.55)",
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    marginTop: -45,
+    marginLeft: -45,
+    borderWidth: 2,
+    borderColor: "rgba(255, 255, 255, 0.4)",
   },
-  goalTop: {
+  pitchCenterSpot: {
+    position: "absolute",
+    top: "50%",
+    left: "50%",
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginTop: -3,
+    marginLeft: -3,
+    backgroundColor: "rgba(255, 255, 255, 0.8)",
+  },
+  pitchPenaltyTop: {
     position: "absolute",
     top: 0,
-    left: "28%",
-    right: "28%",
-    height: 55,
-    borderWidth: 1,
-    borderTopWidth: 0,
-    borderColor: "rgba(255,255,255,0.55)",
+    left: "24%",
+    right: "24%",
+    height: 65,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+    borderRightWidth: 2,
+    borderColor: "rgba(255, 255, 255, 0.4)",
   },
-  goalBottom: {
+  pitchGoalTop: {
+    position: "absolute",
+    top: 0,
+    left: "36%",
+    right: "36%",
+    height: 26,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+    borderRightWidth: 2,
+    borderColor: "rgba(255, 255, 255, 0.4)",
+  },
+  pitchPenaltyBottom: {
     position: "absolute",
     bottom: 0,
-    left: "28%",
-    right: "28%",
-    height: 55,
-    borderWidth: 1,
-    borderBottomWidth: 0,
-    borderColor: "rgba(255,255,255,0.55)",
+    left: "24%",
+    right: "24%",
+    height: 65,
+    borderTopWidth: 2,
+    borderLeftWidth: 2,
+    borderRightWidth: 2,
+    borderColor: "rgba(255, 255, 255, 0.4)",
   },
-  slot: {
+  pitchGoalBottom: {
     position: "absolute",
-    width: 74,
-    marginLeft: -37,
-    alignItems: "center",
+    bottom: 0,
+    left: "36%",
+    right: "36%",
+    height: 26,
+    borderTopWidth: 2,
+    borderLeftWidth: 2,
+    borderRightWidth: 2,
+    borderColor: "rgba(255, 255, 255, 0.4)",
   },
-  playerToken: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+
+  // Slot Tokens
+  slotToken: {
+    position: "absolute",
+    transform: [{ translateX: -25 }, { translateY: -25 }],
     alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#d7fc5a",
+    width: 50,
+  },
+  playerBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255, 255, 255, 0.3)",
     borderWidth: 2,
     borderColor: "#fff",
-  },
-  playerTokenFilled: { backgroundColor: "#0f0f0d" },
-  tokenPhoto: { width: 38, height: 38, borderRadius: 19 },
-  slotLabel: {
-    color: "#fff",
-    fontSize: 10,
-    fontWeight: "800",
-    textAlign: "center",
-    marginTop: 3,
-    textShadowColor: "#0f0f0d",
-    textShadowRadius: 3,
-  },
-  tipRow: {
-    flexDirection: "row",
     alignItems: "center",
-    marginTop: 15,
-    padding: 13,
-    borderRadius: 13,
-    backgroundColor: "rgba(255,255,255,0.08)",
+    justifyContent: "center",
+    position: "relative",
   },
-  tipText: {
-    color: "rgba(255,255,255,0.72)",
-    fontSize: 12,
-    lineHeight: 17,
-    marginLeft: 8,
-    flex: 1,
+  playerBadgeFilled: {
+    backgroundColor: THEME.colors.primary,
+    borderColor: "#080a0f",
   },
-  sectionTitle: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "800",
-    marginTop: 25,
-    marginBottom: 12,
-  },
-  benchRow: { gap: 12 },
-  benchPlayer: { width: 92, alignItems: "center" },
-  benchPhoto: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    backgroundColor: "rgba(255,255,255,0.1)",
-  },
-  benchName: {
-    color: "#fff",
+  playerNumInitial: {
     fontSize: 11,
-    fontWeight: "700",
-    marginTop: 6,
-    textAlign: "center",
+    fontWeight: "900",
+    color: "#080a0f",
   },
-  benchPosition: {
-    color: "rgba(255,255,255,0.55)",
+  captainBadge: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: "#ffd700",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#080a0f",
+  },
+  captainText: {
+    fontSize: 9,
+    fontWeight: "900",
+    color: "#080a0f",
+  },
+  slotNamePill: {
+    backgroundColor: "rgba(8, 10, 15, 0.8)",
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 6,
+    marginTop: 3,
+  },
+  slotPlayerName: {
     fontSize: 10,
-    marginTop: 2,
+    fontWeight: "800",
+    color: "#ffffff",
     textAlign: "center",
   },
-  photoStatus: { color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 14 },
+
+  // Modal
   modalOverlay: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(0,0,0,0.6)",
+    backgroundColor: "rgba(0,0,0,0.75)",
   },
-  modalBackdrop: { flex: 1 },
-  playerPicker: {
-    maxHeight: "72%",
-    backgroundColor: "#111",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingTop: 10,
-    paddingBottom: 25,
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  modalSheet: {
+    backgroundColor: "#121722",
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    padding: 20,
+    maxHeight: "75%",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.12)",
   },
   modalHandle: {
-    width: 58,
+    width: 44,
     height: 5,
     borderRadius: 3,
-    backgroundColor: "rgba(255,255,255,0.2)",
+    backgroundColor: "rgba(255, 255, 255, 0.25)",
     alignSelf: "center",
+    marginBottom: 14,
   },
-  pickerHeader: {
+  modalHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: 20,
+    marginBottom: 14,
   },
-  pickerTitle: { color: "#fff", fontSize: 20, fontWeight: "900" },
-  pickerSubtitle: {
-    color: "rgba(255,255,255,0.55)",
+  modalSheetTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#fff",
+  },
+  modalSheetSub: {
     fontSize: 12,
-    marginTop: 3,
+    color: "rgba(255, 255, 255, 0.5)",
+    marginTop: 2,
   },
-  clearText: { color: "#ff7777", fontWeight: "800" },
-  pickerList: { paddingHorizontal: 20, paddingBottom: 20 },
-  pickerPlayer: {
+  clearSlotBtn: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 11,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255, 42, 68, 0.15)",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
   },
-  pickerPhoto: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "rgba(255,255,255,0.1)",
-  },
-  pickerPlayerInfo: { flex: 1, marginLeft: 12 },
-  pickerPlayerName: { color: "#fff", fontSize: 15, fontWeight: "700" },
-  pickerPlayerPosition: {
-    color: "rgba(255,255,255,0.55)",
+  clearSlotText: {
+    color: "#ff2a44",
     fontSize: 12,
-    marginTop: 3,
+    fontWeight: "800",
+  },
+  playerPickerList: {
+    marginBottom: 20,
+  },
+  pickerItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    marginBottom: 8,
+  },
+  pickerItemActive: {
+    backgroundColor: "rgba(215, 252, 90, 0.15)",
+    borderWidth: 1,
+    borderColor: THEME.colors.primary,
+  },
+  pickerNumberCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  pickerNumberText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: THEME.colors.primary,
+  },
+  pickerInfoCol: {
+    flex: 1,
+  },
+  pickerName: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#fff",
+  },
+  pickerPos: {
+    fontSize: 12,
+    color: "rgba(255, 255, 255, 0.5)",
+    marginTop: 1,
+  },
+  compatChip: {
+    backgroundColor: "rgba(0, 230, 118, 0.15)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  compatText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#00e676",
+  },
+  altChip: {
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  altText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "rgba(255, 255, 255, 0.45)",
   },
 });

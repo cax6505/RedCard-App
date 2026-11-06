@@ -96,7 +96,7 @@ export default function AppNavigator() {
               )}
             </Stack.Navigator>
           </View>
-          {shouldShowFooter && <FooterDock />}
+          {shouldShowFooter && <FooterDock currentRoute={currentRoute} />}
         </View>
       </NavigationContainer>
     </SafeAreaProvider>
